@@ -9,7 +9,7 @@
   const state = {
     pkey: 'anon', page: 'home', p: clone(PERSONAS.anon),
     panel: window.innerWidth >= 1200, labels: true, tour: null, flash: new Set(),
-    toastClosed: false, askedThisVisit: false, pick: [], consent: false,
+    toastClosed: false, askedThisVisit: false, pick: [], consent: false, flow: null,
   };
 
   /* ================= Engine ================= */
@@ -99,6 +99,22 @@
     return null;
   }
 
+  // Spelregel 5 (voorstel), in deze volgorde:
+  // a. Is de next best action een drempel die nog niet is opgelost: het contact gaat over die drempel (de check).
+  // b. Staat de next best action op Gestart: een follow-up ('is het gelukt?') bij het volgende bezoek.
+  // c. Anders de wachtrij: eerst het fundament, dan V-vragen. Die checken of er nog een drempel is vóór de volgende stap.
+  // d. Is de wachtrij leeg: de eigen vraag van de next best action uit het Actiemodel (bijv. 'Klaar om het gewoon eens te proberen?').
+  function nextInteraction(p) {
+    const nk = nba(p), s = status(p, nk);
+    if (DREMPELS.includes(nk) && isRel(s)) return { kind: 'drempel', key: nk, q: FLOWS[nk].title + '?', sub: FLOWS[nk].intro };
+    if (s === 'gestart' && FOLLOWUP[nk]) return { kind: 'followup', key: nk, q: FOLLOWUP[nk].q, sub: 'Dan weten we wat je volgende stap is.', options: FOLLOWUP[nk].options };
+    const q = nextQuestion(p);
+    if (q) return q;
+    const a = ACTIONS.find(x => x.key === nk);
+    if (isRel(s) && a && a.q) return { kind: 'nba', key: nk, q: a.q.q, sub: 'Dit is je volgende stap.', options: a.q.options };
+    return null;
+  }
+
   /* ================= Content ================= */
   function nbaContent(key, p) {
     const c = city(p), b = mainB(p);
@@ -114,6 +130,11 @@
       thuisworkouts: { icon: '▶', title: 'Begin thuis met een korte workout', text: 'Uniek Sporten Thuis: korte workouts op jouw tempo, wanneer het jou uitkomt.', cta: 'Start een workout', go: 'home', mail: 'Thuis beginnen' },
       inspiratie: { icon: '★', title: 'Lees hoe anderen begonnen', text: 'Echte verhalen van sporters met een beperking. Misschien zit jouw sport ertussen.', cta: 'Lees de verhalen', go: 'home', mail: 'Inspiratie' },
     };
+    if (DREMPELS.includes(key)) {
+      map[key].go = 'drempel';
+      if (status(p, key) === 'gestart') Object.assign(map[key], { title: FLOWS[key].gestart, text: `Je bent ermee bezig. Bekijk je advies en markeer het als geregeld zodra het rond is.`, cta: 'Bekijk je aanvraag' });
+      else map[key].cta = { vervoer: 'Doe de vervoerscheck', financien: 'Doe de fondsencheck', hulpmiddelen: 'Bekijk wat bij je past', maatje: 'Vind een sportmaatje' }[key];
+    }
     return map[key];
   }
 
@@ -380,9 +401,57 @@
     </div>`;
   }
 
+  /* ================= Drempel oplossen ================= */
+  function openFlow(key) {
+    const p = state.p, saved = p.flowAnswers && p.flowAnswers[key];
+    state.flow = { key, step: saved ? FLOWS[key].steps.length : 0, answers: saved ? { ...saved } : {} };
+    state.page = 'drempel';
+  }
+
+  function drempel(p) {
+    const F = state.flow, fl = FLOWS[F.key], s = status(p, F.key), done = F.step >= fl.steps.length;
+    const known = [['Woonplaats', fld(p, 'woonplaats')], ['Type beperking', beperkingen(p).join(', ')], ['Sportvoorkeur', show(fld(p, 'sportvoorkeur'))], ['Sportstatus', fld(p, 'sportstatus')]].filter(x => x[1]);
+    const dots = fl.steps.map((st, i) => `<span class="fd ${i < F.step ? 'done' : ''} ${i === F.step ? 'now' : ''}"></span>`).join('') + `<span class="fd ${done ? 'now' : ''}"></span>`;
+    let main;
+    if (!done) {
+      const st = fl.steps[F.step];
+      main = `<p class="muted">Vraag ${F.step + 1} van ${fl.steps.length}</p><h2 class="flow-q">${esc(st.q)}</h2>
+        <div class="flow-opts">${st.options.map((o, i) => `<button class="flow-opt" data-fopt="${i}">${esc(o)}</button>`).join('')}</div>
+        ${F.step ? '<button class="btn ghost sm" data-act="fback">← Terug</button>' : ''}`;
+    } else {
+      const adv = fl.advies(F.answers, p);
+      const bar = s === 'afgerond'
+        ? `<div class="flow-bar ok"><b>✓ ${esc(fl.afgerond)}</b><span>actie_${F.key} = Afgerond. De volgende stap is weer: ${esc(nbaContent(nba(p), p).title)}.</span><button class="btn or sm" data-page="home">Naar je volgende stap →</button></div>`
+        : s === 'gestart'
+          ? `<div class="flow-bar"><b>${esc(fl.gestart)}</b><span>actie_${F.key} = Gestart. Rond is het pas als het geregeld is.</span><button class="btn or sm" data-act="fdone">Markeer als geregeld</button></div>`
+          : `<div class="flow-bar"><b>Klaar om te beginnen?</b><span>Start je aanvraag. We helpen je bij elke stap.</span><button class="btn or sm" data-act="fstart">Start aanvraag</button></div>`;
+      main = `<h2 class="flow-q">Dit past bij jou</h2>
+        <div class="advs">${adv.map((x, i) => `<div class="adv ${i === 0 ? 'top' : ''}">${i === 0 ? '<span class="badge or">Past het best</span>' : ''}<h3>${esc(x.t)}</h3><p>${esc(x.d)}</p><small>→ ${esc(x.how)}</small></div>`).join('')}</div>
+        ${bar}
+        <button class="btn ghost sm" data-act="frestart">Antwoorden aanpassen</button>`;
+    }
+    return header(p) + `
+      <section class="sec"><div class="wrap">
+        <p class="crumbs">Home › Voor sporters › ${esc(fl.title)}</p>
+        <div class="flow">
+          <div class="flow-main">
+            <p class="eyebrow">Drempel wegnemen</p><h1 class="sec-t">${esc(fl.title)}</h1><p class="lead">${esc(fl.intro)}</p>
+            <div class="fdots">${dots}</div>
+            ${main}
+          </div>
+          <aside class="flow-side${pz('velden uit het profiel')}">${tag('velden uit het profiel')}
+            <h3>Wat we al van je weten</h3>
+            <ul>${known.map(([k, v]) => `<li><span>${k}</span><b>${esc(v)}</b></li>`).join('')}</ul>
+            <p class="muted small">Daarom stellen we alleen vragen die we nog niet weten.</p>
+            <div class="flow-st"><span>actie_${F.key}</span><span class="st ${s}">${STATUS_LABEL[s]}</span></div>
+          </aside>
+        </div>
+      </div></section>` + footer();
+  }
+
   /* ================= Profielpaneel ================= */
   function renderPanel() {
-    const p = state.p, fz = fase(p), nk = nba(p), nq = nextQuestion(p);
+    const p = state.p, fz = fase(p), nk = nba(p), nq = nextInteraction(p);
     const pill = v => v ? `<span class="src ${v.src}">${v.src === 'gevraagd' ? 'actief' : 'passief'}${v.when ? ' · ' + esc(v.when) : ''}</span>` : '';
     const row = (x, v) => `<tr class="${state.flash.has(x.key) ? 'flash' : ''}"><td>${x.label}${x.art9 ? ' <span class="lock" title="Art. 9 AVG: alleen met aparte, uitdrukkelijke toestemming">🔒</span>' : ''}${x.fase === 2 ? ' <span class="uf" title="Uitrolfase 2">F2</span>' : ''}<code>${x.key}</code></td><td>${v ? `<b>${esc(show(v.v))}</b>${pill(v)}` : '<span class="empty">leeg</span>'}</td></tr>`;
     $('#panel').innerHTML = `
@@ -405,7 +474,7 @@
 
       <div class="pp-sec"><h4>D. Sturing</h4><table class="pf">${STURING.filter(x => x.blok === 'D').map(x => row(x, p.sturing[x.key])).join('')}</table></div>
 
-      <div class="pp-sec"><h4>Volgende vraag in de wachtrij</h4>${nq ? `<p class="q-next">“${esc(nq.q)}”<br><small class="muted">${nq.kind === 'field' ? 'fundament: ' + nq.key : 'V-vraag voor actie_' + nq.key}</small></p>` : '<p class="muted">Geen open vragen.</p>'}</div>
+      <div class="pp-sec"><h4>Volgende vraag in de wachtrij</h4>${nq ? `<p class="q-next">“${esc(nq.q)}”<br><small class="muted">${nq.kind === 'field' ? 'fundament: ' + nq.key : nq.kind === 'drempel' ? 'eerst de drempel: actie_' + nq.key + ' (spelregel 5, voorstel)' : nq.kind === 'followup' ? 'follow-up op actie_' + nq.key + ' = Gestart' : nq.kind === 'nba' ? 'vraag van de next best action (wachtrij leeg)' : 'V-vraag: is er nog een drempel? (actie_' + nq.key + ')'}</small></p>` : '<p class="muted">Geen open vragen.</p>'}</div>
 
       <div class="pp-sec"><h4>Recent gedrag</h4><ul class="log">${p.log.slice().reverse().map(l => `<li>${esc(l)}</li>`).join('')}</ul></div>`;
     document.body.classList.toggle('panel-open', state.panel);
@@ -417,14 +486,20 @@
     if (state.page !== 'home' || state.toastClosed) { $('#toaster').innerHTML = ''; return; }
     const lbl = state.labels ? '<span class="pz-tag in"><b>BlueConic-dialoog</b> max. 1 vraag per bezoek</span>' : '';
     if (state.askedThisVisit) {
-      const nq = nextQuestion(p);
+      const nq = nextInteraction(p);
       $('#toaster').innerHTML = `<div class="toast done">${lbl}<button class="x" data-act="closetoast" aria-label="Sluiten">×</button>
         <h3>Dank je wel!</h3><p>Je antwoord is opgeslagen in je profiel. ${nq ? 'De volgende vraag krijg je bij je volgende bezoek (spelregel 3).' : 'Er staan geen vragen meer open.'}</p>
         ${nq ? '<button class="btn nv sm" data-act="nextvisit">Simuleer volgend bezoek →</button>' : ''}</div>`;
       return;
     }
-    const q = nextQuestion(p);
+    const q = nextInteraction(p);
     if (!q) { $('#toaster').innerHTML = ''; return; }
+    if (q.kind === 'drempel') {
+      $('#toaster').innerHTML = `<div class="toast">${state.labels ? '<span class="pz-tag in"><b>BlueConic-dialoog</b> eerst de drempel (spelregel 5)</span>' : ''}<button class="x" data-act="closetoast" aria-label="Sluiten">×</button>
+        <img src="${IMG.logo}" alt="" class="toast-logo"><h3>${esc(q.q)}</h3><p>${esc(q.sub)}</p>
+        <div class="opts"><button class="btn or sm" data-go="drempel">Start de check →</button></div></div>`;
+      return;
+    }
     const opts = q.multi
       ? `<div class="opts multi">${q.options.map(([l, v]) => `<label class="chk ${state.pick.includes(v) ? 'on' : ''}"><input type="checkbox" data-pick="${esc(v)}" ${state.pick.includes(v) ? 'checked' : ''}> ${esc(l)}</label>`).join('')}</div>
          <button class="btn or sm" data-act="savemulti" ${state.pick.length && state.consent ? '' : 'disabled'}>Opslaan</button>`
@@ -438,7 +513,7 @@
       </div>`;
   }
 
-  function commit(changes) {
+  function commit(changes, asked = true) {
     const p = state.p, before = { nba: nba(p), fase: fase(p).n, st: Object.fromEntries(ACTIONS.map(a => [a.key, status(p, a.key)])) };
     state.flash = new Set();
     changes(p);
@@ -446,23 +521,26 @@
     if (nba(p) !== before.nba) state.flash.add('nba');
     if (fase(p).n !== before.fase) state.flash.add('fase');
     p.sturing.laatste_interactie = { v: '2026-11-09', src: 'gedrag', when: 'zojuist' };
-    state.askedThisVisit = true; state.pick = []; state.consent = false;
+    if (asked) state.askedThisVisit = true;
+    state.pick = []; state.consent = false;
     if (!state.panel && window.innerWidth >= 900) state.panel = true;
     render();
     setTimeout(() => { state.flash = new Set(); renderPanel(); }, 2800);
   }
 
   function answer(i) {
-    const q = nextQuestion(state.p), [label, val] = q.options[i];
+    const q = nextInteraction(state.p), [label, val, extra] = q.options[i];
     commit(p => {
       if (q.kind === 'field') { p.fields[q.key] = { v: val, src: 'gevraagd', when: 'zojuist' }; state.flash.add(q.key); }
+      else if (val === 'help') p.progress.buurtsportcoach = 'relevant_gevraagd';
       else p.progress[q.key] = val;
+      Object.entries(extra || {}).forEach(([k, v]) => { p.fields[k] = { v, src: 'gevraagd', when: 'zojuist' }; state.flash.add(k); });
       p.log.push(`Zojuist: “${q.q}” → ${label}`);
     });
   }
 
   function saveMulti() {
-    const q = nextQuestion(state.p), vals = [...state.pick];
+    const q = nextInteraction(state.p), vals = [...state.pick];
     commit(p => {
       p.fields[q.key] = { v: vals, src: 'gevraagd', when: 'zojuist' }; state.flash.add(q.key);
       p.log.push(`Zojuist: type_beperking → ${vals.join(', ')} (met aparte toestemming)`);
@@ -474,7 +552,7 @@
     { persona: 'anon', page: 'home', t: 'Zo ziet de site er vandaag voor iedereen uit', d: 'Een nieuwe bezoeker in fase 1, Bewustwording. Het profiel rechts is leeg: we weten niet wie het is of wat hij zoekt.' },
     { persona: 'anon', page: 'home', t: 'Eén vraag per bezoek vult het fundament', d: '“Voor wie kijk je vandaag?” Beantwoord de vraag en simuleer een paar bezoeken. Bij 4 velden schuift de bezoeker naar fase 2 en krijgt hij een eigen volgende stap.' },
     { persona: 'mark', page: 'home', t: 'Mark, 52: NAH, herintreder, fase 2 Interesse', d: 'Herintreder en inactief met sportwens: beweegadvies is relevant en staat bovenaan het Actiemodel. Zijn volgende vraag komt uit de matrix: zou hij samen willen sporten?' },
-    { persona: 'kim', page: 'home', t: 'Kim, 27: rolstoel, fase 3 Oriëntatie', d: 'Sportzoeker en hulpmiddel zijn afgerond, dus de proefles is relevant. Antwoord “Soms” op de vervoersvraag: vervoer wordt een drempel en schuift voor de proefles.' },
+    { persona: 'kim', page: 'home', t: 'Kim, 27: rolstoel, fase 3 Oriëntatie', d: 'Sportzoeker en hulpmiddel zijn afgerond, dus de proefles is relevant. Antwoord “Soms” op de vervoersvraag: vervoer wordt de volgende stap. Doe de vervoerscheck, start de aanvraag en markeer hem als geregeld: dan is de proefles weer aan de beurt.' },
     { persona: 'kim', page: 'sportzoeker', t: 'De Sportzoeker staat al klaar', d: 'Woonplaats, sport en beperking komen uit het profiel. De resultaten zijn gesorteerd op match.' },
     { persona: 'henk', page: 'home', t: 'Henk, 63: Parkinson, fase 5 Actief deelnemen', d: 'Actief zonder club, met 4 thuisworkouts gedaan. Zijn volgende stap is een club. Kiest hij voor samen sporten, dan wordt een sportmaatje de volgende stap.' },
     { persona: 'henk', page: 'mail', t: 'Dezelfde stap in de mail', d: 'BlueConic synct de next best action en de klantreisfase naar ActiveCampaign. Site en mail vertellen hetzelfde verhaal, één stap tegelijk.' },
@@ -500,23 +578,33 @@
 
   /* ================= Render & events ================= */
   function setPersona(k, doRender = true) {
-    Object.assign(state, { pkey: k, p: clone(PERSONAS[k]), flash: new Set(), toastClosed: false, askedThisVisit: false, pick: [], consent: false });
+    Object.assign(state, { pkey: k, p: clone(PERSONAS[k]), flash: new Set(), toastClosed: false, askedThisVisit: false, pick: [], consent: false, flow: null });
+    if (state.page === 'drempel') state.page = 'home';
     if (doRender) { render(); window.scrollTo({ top: 0 }); }
   }
 
   function render() {
     renderBar();
     const p = state.p;
-    $('#app').innerHTML = `<div class="site">${state.page === 'home' ? home(p) : state.page === 'sportzoeker' ? sportzoeker(p) : mail(p)}</div>`;
+    $('#app').innerHTML = `<div class="site">${state.page === 'home' ? home(p) : state.page === 'sportzoeker' ? sportzoeker(p) : state.page === 'drempel' && state.flow ? drempel(p) : mail(p)}</div>`;
     renderPanel(); renderToaster(); renderTour();
   }
 
   document.addEventListener('click', e => {
-    const t = e.target.closest('[data-persona],[data-page],[data-go],[data-act],[data-ans]');
+    const t = e.target.closest('[data-persona],[data-page],[data-go],[data-act],[data-ans],[data-fopt]');
     if (!t) return;
     if (t.dataset.persona) { state.tour = null; setPersona(t.dataset.persona); return; }
     if (t.dataset.page) { e.preventDefault(); state.page = t.dataset.page; render(); window.scrollTo({ top: 0 }); return; }
-    if (t.dataset.go) { if (t.dataset.go !== 'home') { state.page = t.dataset.go; render(); window.scrollTo({ top: 0 }); } return; }
+    if (t.dataset.go) {
+      if (t.dataset.go === 'drempel') { openFlow(nba(state.p)); render(); window.scrollTo({ top: 0 }); }
+      else if (t.dataset.go !== 'home') { state.page = t.dataset.go; render(); window.scrollTo({ top: 0 }); }
+      return;
+    }
+    if (t.dataset.fopt !== undefined) {
+      const F = state.flow, st = FLOWS[F.key].steps[F.step];
+      F.answers[st.key] = st.options[+t.dataset.fopt]; F.step++;
+      render(); return;
+    }
     if (t.dataset.ans !== undefined) { answer(+t.dataset.ans); return; }
     const a = t.dataset.act;
     if (a === 'panel') { state.panel = !state.panel; render(); }
@@ -524,6 +612,16 @@
     if (a === 'closetoast') { state.toastClosed = true; renderToaster(); }
     if (a === 'nextvisit') { state.askedThisVisit = false; state.p.log.push('Nieuw bezoek'); render(); }
     if (a === 'savemulti') saveMulti();
+    if (a === 'fback') { state.flow.step--; render(); }
+    if (a === 'frestart') { state.flow = { key: state.flow.key, step: 0, answers: {} }; render(); }
+    if (a === 'fstart' || a === 'fdone') {
+      const F = state.flow, val = a === 'fstart' ? 'gestart' : 'afgerond';
+      commit(p => {
+        p.progress[F.key] = val;
+        p.flowAnswers = { ...(p.flowAnswers || {}), [F.key]: F.answers };
+        p.log.push(`Zojuist: ${a === 'fstart' ? FLOWS[F.key].gestart : FLOWS[F.key].afgerond} (actie_${F.key} = ${STATUS_LABEL[val]})`);
+      });
+    }
     if (a === 'tour') goTour(state.tour === null ? 0 : state.tour);
     if (a === 'tnext') goTour(state.tour + 1);
     if (a === 'tprev') goTour(state.tour - 1);
