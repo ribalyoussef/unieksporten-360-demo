@@ -8,7 +8,7 @@
 
   const state = {
     pkey: 'anon', page: 'home', p: clone(PERSONAS.anon),
-    panel: window.innerWidth >= 1200, labels: true, tour: null, flash: new Set(),
+    panel: window.innerWidth >= 1200, labels: false, tour: null, flash: new Set(),
     toastClosed: false, askedThisVisit: false, pick: [], consent: false, flow: null,
   };
 
@@ -94,7 +94,7 @@
     for (const a of ACTIONS) {
       if (!a.q || status(p, a.key) !== 'onbekend') continue;
       if (matrix(p, a.key) !== 'V') continue;
-      return { kind: 'action', key: a.key, q: a.q.q, sub: 'Je antwoord bepaalt wat we je laten zien.', options: a.q.options };
+      return { kind: 'action', key: a.key, q: a.q.q, sub: 'Dan kunnen we je beter op weg helpen.', options: a.q.options };
     }
     return null;
   }
@@ -107,7 +107,7 @@
   function nextInteraction(p) {
     const nk = nba(p), s = status(p, nk);
     if (DREMPELS.includes(nk) && isRel(s)) return { kind: 'drempel', key: nk, q: FLOWS[nk].title + '?', sub: FLOWS[nk].intro };
-    if (s === 'gestart' && FOLLOWUP[nk]) return { kind: 'followup', key: nk, q: FOLLOWUP[nk].q, sub: 'Dan weten we wat je volgende stap is.', options: FOLLOWUP[nk].options };
+    if (s === 'gestart' && FOLLOWUP[nk]) return { kind: 'followup', key: nk, q: FOLLOWUP[nk].q, sub: 'Dan helpen we je verder.', options: FOLLOWUP[nk].options };
     const q = nextQuestion(p);
     if (q) return q;
     const a = ACTIONS.find(x => x.key === nk);
@@ -125,14 +125,14 @@
       hulpmiddelen: { icon: '♿', title: 'Probeer een sporthulpmiddel', text: 'Bekijk welke sporthulpmiddelen je kunt aanschaffen of lenen, en vraag er een aan.', cta: 'Bekijk hulpmiddelen', go: 'home', mail: 'Drempel: hulpmiddelen' },
       maatje: { icon: '🤝', title: `Sporten met een sportmaatje${c ? ' in ' + c : ''}`, text: 'Samen is de stap naar een club makkelijker. We koppelen je aan een maatje met dezelfde sportwens.', cta: 'Vind een sportmaatje', go: 'home', mail: 'Drempel: maatje' },
       buurtsportcoach: { icon: '💬', title: 'Een buurtsportcoach denkt met je mee', text: `${c ? 'De buurtsportcoach in ' + c : 'Een buurtsportcoach'} helpt je kosteloos op weg, in jouw tempo.`, cta: 'Neem contact op', go: 'home', mail: 'Vangnet: buurtsportcoach' },
-      sportzoeker: { icon: '🔍', title: `Vind een club${c ? ' in ' + c : ' bij jou in de buurt'}`, text: `De Sportzoeker staat al voor je klaar${c ? ' met ' + c : ''}${b ? ' en je beperking' : ''}. Bekijk de sporten die het best bij je passen.`, cta: 'Bekijk jouw resultaten', go: 'sportzoeker', mail: 'Ontdek wat bij je past' },
+      sportzoeker: { icon: '🔍', title: `Vind een club${c ? ' in ' + c : ' bij jou in de buurt'}`, text: `Bekijk welke sporten${c ? ' in ' + c : ' bij jou in de buurt'} het best bij je passen.`, cta: 'Bekijk jouw resultaten', go: 'sportzoeker', mail: 'Ontdek wat bij je past' },
       proefles: { icon: '🏀', title: 'Plan je proefles', text: p.key === 'kim' ? 'Rolstoelbasketbal in Amsterdam Nieuw-West (3,2 km). Neem je eigen sportrolstoel mee, de eerste les is gratis.' : 'Je hebt een sport gevonden. Probeer het gewoon eens, de eerste les is vaak gratis.', cta: 'Plan je proefles', go: 'sportzoeker', mail: 'Proefles' },
       thuisworkouts: { icon: '▶', title: 'Begin thuis met een korte workout', text: 'Uniek Sporten Thuis: korte workouts op jouw tempo, wanneer het jou uitkomt.', cta: 'Start een workout', go: 'home', mail: 'Thuis beginnen' },
       inspiratie: { icon: '★', title: 'Lees hoe anderen begonnen', text: 'Echte verhalen van sporters met een beperking. Misschien zit jouw sport ertussen.', cta: 'Lees de verhalen', go: 'home', mail: 'Inspiratie' },
     };
     if (DREMPELS.includes(key)) {
       map[key].go = 'drempel';
-      if (status(p, key) === 'gestart') Object.assign(map[key], { title: FLOWS[key].gestart, text: `Je bent ermee bezig. Bekijk je advies en markeer het als geregeld zodra het rond is.`, cta: 'Bekijk je aanvraag' });
+      if (status(p, key) === 'gestart') Object.assign(map[key], { title: FLOWS[key].gestart, text: `Bekijk je advies en de volgende stappen.`, cta: 'Bekijk je aanvraag' });
       else map[key].cta = { vervoer: 'Doe de vervoerscheck', financien: 'Doe de fondsencheck', hulpmiddelen: 'Bekijk wat bij je past', maatje: 'Vind een sportmaatje' }[key];
     }
     return map[key];
@@ -140,8 +140,8 @@
 
   function hero(p) {
     if (p.key === 'mark') return { eyebrow: 'Welkom terug, Mark', t1: 'Weer in beweging', t2: 'na je herseninfarct.', text: 'Stefan en Yolanda gingen je voor: met kleine stappen terug naar sport. Wij helpen je met de eerste, op jouw tempo.', img: STORIES[1].img, why: 'type_beperking = NAH · sportervaring = Herintreder' };
-    if (p.key === 'kim') return { eyebrow: 'Welkom terug, Kim', t1: 'Klaar voor', t2: 'teamsport, Kim?', text: 'Je hebt rolstoelbasketbal in Amsterdam gevonden en je sportrolstoel is geregeld. Tijd voor de volgende stap.', img: IMG.hulpmiddelHome, why: 'sportvoorkeur = rolstoelbasketbal · actie_sportzoeker = Afgerond' };
-    if (p.key === 'henk') return { eyebrow: 'Welkom terug, Henk', t1: 'Blijven bewegen', t2: 'met Parkinson.', text: 'Je doet al thuisworkouts. Steeds meer clubs in Eindhoven hebben een groep voor mensen met Parkinson: klimmen, boksen, wandelen. Samen sporten houdt je in beweging.', img: STORIES[2].img, why: 'type_beperking = Chronisch · woonplaats = Eindhoven · beweegambitie = Sociaal' };
+    if (p.key === 'kim') return { eyebrow: 'Welkom terug, Kim', t1: 'Klaar voor', t2: 'teamsport, Kim?', text: 'Rolstoelbasketbal in Amsterdam: snel, fanatiek en met een team dat op je wacht. Kom een keer meedoen.', img: IMG.hulpmiddelHome, why: 'sportvoorkeur = rolstoelbasketbal · actie_sportzoeker = Afgerond' };
+    if (p.key === 'henk') return { eyebrow: 'Welkom terug, Henk', t1: 'Blijven bewegen', t2: 'met Parkinson.', text: 'Klimmen, boksen, wandelen: steeds meer clubs in Eindhoven hebben een groep voor mensen met Parkinson. Samen sporten houdt je in beweging.', img: STORIES[2].img, why: 'type_beperking = Chronisch · woonplaats = Eindhoven · beweegambitie = Sociaal' };
     const tb = fld(p, 'type_bezoeker');
     if (tb && !sporterRoute(p)) return { eyebrow: `Voor ${tb === 'Club' ? 'sportclubs' : tb.toLowerCase() + 's'}`, t1: 'Samen meer mensen', t2: 'aan het sporten.', text: 'Verwijzen, begeleiden of aanbod opzetten: hier vind je materiaal, cijfers en contactpersonen voor jouw rol.', img: STORIES[7].img, why: `type_bezoeker = ${tb}` };
     const b = mainB(p);
@@ -149,7 +149,7 @@
       const s = STORIES.find(x => x.tags.includes(b));
       const w = BEPERKING_ZIN[b];
       const ouder = tb === 'Ouder';
-      return { eyebrow: ouder ? 'Voor jouw kind' : 'Speciaal voor jou', t1: `Sporten met ${w[0]}?`, t2: 'Zo begin je.', text: `Honderden sportaanbieders hebben ervaring met ${w[1]}. ${city(p) ? 'We laten je zien wat er in ' + city(p) + ' kan.' : 'Vertel ons waar je woont, dan zoeken we mee.'}`, img: s ? s.img : IMG.zoekjerot, why: `type_beperking = ${b}${ouder ? ' · type_bezoeker = Ouder' : ''}` };
+      return { eyebrow: ouder ? 'Voor jouw kind' : 'Speciaal voor jou', t1: `Sporten met ${w[0]}?`, t2: 'Zo begin je.', text: `Honderden sportaanbieders hebben ervaring met ${w[1]}. ${city(p) ? 'Ontdek wat er in ' + city(p) + ' kan.' : 'Ontdek wat er bij jou in de buurt kan.'}`, img: s ? s.img : IMG.zoekjerot, why: `type_beperking = ${b}${ouder ? ' · type_bezoeker = Ouder' : ''}` };
     }
     return null;
   }
@@ -195,7 +195,7 @@
     return `
     <div class="us-top"><div class="wrap">
       <span class="us-top-l">◐ Toegankelijkheid</span>
-      <span class="us-top-r"><span>Contact</span><span class="${city(p) ? 'pz-inline' : ''}">📍 ${city(p) ? esc(city(p)) : 'Kies je gemeente'} ⌄</span></span>
+      <span class="us-top-r"><span>Contact</span><span>📍 ${city(p) ? esc(city(p)) : 'Kies je gemeente'} ⌄</span></span>
     </div></div>
     <header class="us-nav"><div class="wrap">
       <nav><a>Voor sporters ⌄</a><a>Voor sportclubs ⌄</a><a>Voor professionals ⌄</a></nav>
@@ -245,7 +245,6 @@
       if (t.k === nk) return '<span class="badge or">Jouw volgende stap</span>';
       if (s === 'gestart') return '<span class="badge nv">Ga verder</span>';
       if (isRel(s)) return '<span class="badge lt">Past bij jou</span>';
-      if (s === 'afgerond') return '<span class="badge ok">✓ Afgerond</span>';
       return '';
     };
     const tilesHtml = `
@@ -310,7 +309,7 @@
       { label: 'Welk type beperking of aandoening heb je?', v: bs.map(b => BEPERKING_LABEL[b]).join(', '), auto: bs.length > 0, ph: 'Zoek en selecteer beperking', wide: true },
     ];
   }
-  const szForm = sz => sz.map(x => `<label class="${x.wide ? 'wide' : ''} ${x.auto ? 'auto' : ''}"><span>${x.label}</span><div>${x.v ? esc(x.v) : `<i>${x.ph}</i>`}${x.auto ? '<em>uit je profiel</em>' : ''}</div></label>`).join('');
+  const szForm = sz => sz.map(x => `<label class="${x.wide ? 'wide' : ''} ${x.auto ? 'auto' : ''}"><span>${x.label}</span><div>${x.v ? esc(x.v) : `<i>${x.ph}</i>`}</div></label>`).join('');
 
   function mapSvg(p) {
     const pts = [[52, 18], [60, 22], [70, 20], [48, 30], [58, 34], [68, 32], [78, 30], [44, 42], [54, 46], [64, 44], [74, 42], [40, 54], [50, 58], [60, 56], [70, 58], [80, 54], [46, 68], [56, 70], [66, 72], [62, 84], [72, 82]];
@@ -370,18 +369,18 @@
       hulpmiddelen: `${p.first}, probeer een sporthulpmiddel`,
     }[nk] || `${p.first}, nieuwe verhalen voor jou`;
     const intro = {
-      proefles: 'Je hebt een club gevonden en je sportrolstoel is geregeld. Tijd voor de leukste stap.',
-      beweegadvies: 'Je las al een paar verhalen van herintreders. Wil je weten wat voor jou de beste eerste stap is?',
-      maatje: 'Je gaf aan dat je graag samen sport. Daar helpen we je mee.',
-      vervoer: 'Je gaf aan dat je niet altijd zelf bij een sportlocatie kunt komen. Dat lossen we samen op.',
-      sportzoeker: `Je doet al een tijdje thuisworkouts en las over klimmen bij Parkinson. In ${city(p)} zijn clubs met een groep speciaal voor mensen met Parkinson.`,
+      proefles: 'Tijd voor de leukste stap: gewoon een keer meedoen.',
+      beweegadvies: 'Weer beginnen met sporten? Een beweegadviseur helpt je de eerste stap te kiezen die bij jou past.',
+      maatje: 'Samen sporten is vaak net wat leuker. We helpen je graag op weg.',
+      vervoer: 'Naar de training komen is niet altijd makkelijk. Daar denken we graag in mee.',
+      sportzoeker: `In ${city(p)} zijn clubs met een groep speciaal voor mensen met Parkinson. Misschien is dat iets voor jou.`,
     }[nk] || 'We hebben iets voor je klaargezet.';
     const others = [{ from: 'Uniek Sporten', s: 'De nieuwste verhalen van november', d: '4 nov' }, { from: 'Uniek Sporten Thuis', s: 'Je volgende workout staat klaar', d: '28 okt' }];
     return `<div class="mailbox">
       <div class="mb-list"><div class="mb-h">Inbox · ${esc(p.name)}</div>
         <div class="mb-item on"><b>Uniek Sporten</b><span>${esc(subj)}</span><small>zojuist</small></div>
         ${others.map(o => `<div class="mb-item"><b>${o.from}</b><span>${o.s}</span><small>${o.d}</small></div>`).join('')}
-        <div class="mb-note${pz('flow in ActiveCampaign')}">${tag('flow in ActiveCampaign')}<b>Hoe deze mail ontstaat</b><br>BlueConic synct <code>next_best_action = actie_${nk}</code> en <code>klantreis_fase = ${fz.n}</code> naar ActiveCampaign. Flow: <b>${esc(nc.mail)}</b>. Eén stap per mail, dezelfde als op de website.</div>
+        ${state.labels ? `<div class="mb-note${pz('flow in ActiveCampaign')}">${tag('flow in ActiveCampaign')}<b>Hoe deze mail ontstaat</b><br>BlueConic synct <code>next_best_action = actie_${nk}</code> en <code>klantreis_fase = ${fz.n}</code> naar ActiveCampaign. Flow: <b>${esc(nc.mail)}</b>. Eén stap per mail, dezelfde als op de website.</div>` : ''}
       </div>
       <div class="mb-read">
         <div class="mb-meta"><b>${esc(subj)}</b><small>Van: Uniek Sporten &lt;nieuws@unieksporten.nl&gt; · Aan: ${esc(p.first.toLowerCase())}@voorbeeld.nl</small></div>
@@ -410,7 +409,6 @@
 
   function drempel(p) {
     const F = state.flow, fl = FLOWS[F.key], s = status(p, F.key), done = F.step >= fl.steps.length;
-    const known = [['Woonplaats', fld(p, 'woonplaats')], ['Type beperking', beperkingen(p).join(', ')], ['Sportvoorkeur', show(fld(p, 'sportvoorkeur'))], ['Sportstatus', fld(p, 'sportstatus')]].filter(x => x[1]);
     const dots = fl.steps.map((st, i) => `<span class="fd ${i < F.step ? 'done' : ''} ${i === F.step ? 'now' : ''}"></span>`).join('') + `<span class="fd ${done ? 'now' : ''}"></span>`;
     let main;
     if (!done) {
@@ -421,9 +419,9 @@
     } else {
       const adv = fl.advies(F.answers, p);
       const bar = s === 'afgerond'
-        ? `<div class="flow-bar ok"><b>✓ ${esc(fl.afgerond)}</b><span>actie_${F.key} = Afgerond. De volgende stap is weer: ${esc(nbaContent(nba(p), p).title)}.</span><button class="btn or sm" data-page="home">Naar je volgende stap →</button></div>`
+        ? `<div class="flow-bar ok"><b>✓ ${esc(fl.afgerond)}</b><span>Mooi! Op naar je volgende stap: ${esc(nbaContent(nba(p), p).title.toLowerCase())}.</span><button class="btn or sm" data-page="home">Naar je volgende stap →</button></div>`
         : s === 'gestart'
-          ? `<div class="flow-bar"><b>${esc(fl.gestart)}</b><span>actie_${F.key} = Gestart. Rond is het pas als het geregeld is.</span><button class="btn or sm" data-act="fdone">Markeer als geregeld</button></div>`
+          ? `<div class="flow-bar"><b>${esc(fl.gestart)}</b><span>Je aanvraag loopt. Laat het ons weten als het geregeld is.</span><button class="btn or sm" data-act="fdone">Het is geregeld</button></div>`
           : `<div class="flow-bar"><b>Klaar om te beginnen?</b><span>Start je aanvraag. We helpen je bij elke stap.</span><button class="btn or sm" data-act="fstart">Start aanvraag</button></div>`;
       main = `<h2 class="flow-q">Dit past bij jou</h2>
         <div class="advs">${adv.map((x, i) => `<div class="adv ${i === 0 ? 'top' : ''}">${i === 0 ? '<span class="badge or">Past het best</span>' : ''}<h3>${esc(x.t)}</h3><p>${esc(x.d)}</p><small>→ ${esc(x.how)}</small></div>`).join('')}</div>
@@ -435,15 +433,14 @@
         <p class="crumbs">Home › Voor sporters › ${esc(fl.title)}</p>
         <div class="flow">
           <div class="flow-main">
-            <p class="eyebrow">Drempel wegnemen</p><h1 class="sec-t">${esc(fl.title)}</h1><p class="lead">${esc(fl.intro)}</p>
+            <p class="eyebrow">Hulp bij sporten</p><h1 class="sec-t">${esc(fl.title)}</h1><p class="lead">${esc(fl.intro)}</p>
             <div class="fdots">${dots}</div>
             ${main}
           </div>
-          <aside class="flow-side${pz('velden uit het profiel')}">${tag('velden uit het profiel')}
-            <h3>Wat we al van je weten</h3>
-            <ul>${known.map(([k, v]) => `<li><span>${k}</span><b>${esc(v)}</b></li>`).join('')}</ul>
-            <p class="muted small">Daarom stellen we alleen vragen die we nog niet weten.</p>
-            <div class="flow-st"><span>actie_${F.key}</span><span class="st ${s}">${STATUS_LABEL[s]}</span></div>
+          <aside class="flow-side">
+            <h3>Hulp nodig?</h3>
+            <p>Kom je er niet uit? De buurtsportcoach${city(p) ? ' in ' + esc(city(p)) : ''} denkt kosteloos met je mee.</p>
+            <button class="btn nv sm">Neem contact op</button>
           </aside>
         </div>
       </div></section>` + footer();
@@ -488,7 +485,7 @@
     if (state.askedThisVisit) {
       const nq = nextInteraction(p);
       $('#toaster').innerHTML = `<div class="toast done">${lbl}<button class="x" data-act="closetoast" aria-label="Sluiten">×</button>
-        <h3>Dank je wel!</h3><p>Je antwoord is opgeslagen in je profiel. ${nq ? 'De volgende vraag krijg je bij je volgende bezoek (spelregel 3).' : 'Er staan geen vragen meer open.'}</p>
+        <h3>Dank je wel!</h3><p>Zo kunnen we je beter op weg helpen.</p>${state.labels && nq ? '<p class="muted small">Demo: de volgende vraag komt bij het volgende bezoek (spelregel 3).</p>' : ''}
         ${nq ? '<button class="btn nv sm" data-act="nextvisit">Simuleer volgend bezoek →</button>' : ''}</div>`;
       return;
     }
@@ -508,7 +505,7 @@
       <div class="toast">${lbl}<button class="x" data-act="closetoast" aria-label="Sluiten">×</button>
         <img src="${IMG.logo}" alt="" class="toast-logo">
         <h3>${esc(q.q)}</h3><p>${esc(q.sub)}</p>
-        ${q.consent ? `<label class="consent"><input type="checkbox" id="consent" ${state.consent ? 'checked' : ''}> Ik geef Uniek Sporten uitdrukkelijk toestemming om deze gezondheidsinformatie te gebruiken om mij passend aanbod te tonen. (Los van je profieltoestemming, art. 9 AVG.)</label>` : ''}
+        ${q.consent ? `<label class="consent"><input type="checkbox" id="consent" ${state.consent ? 'checked' : ''}> Ik geef Uniek Sporten uitdrukkelijk toestemming om deze gezondheidsinformatie te gebruiken om mij passend aanbod te tonen. Je kunt dit altijd weer intrekken.</label>` : ''}
         ${opts}
       </div>`;
   }
