@@ -50,15 +50,15 @@ const STURING = [
 
 // Blok C: de 10 diensten, in de volgorde van het Actiemodel (= prioriteit voor de next best action)
 const ACTIONS = [
-  { key: 'beweegadvies', label: 'Beweegadvies', q: { q: 'Wil je gratis persoonlijk beweegadvies?', options: [['Ja', 'relevant_gevraagd'], ['Nee', 'nietrelevant']] } },
+  { key: 'beweegadvies', label: 'Beweegadvies', q: { q: 'Wil je gratis persoonlijk beweegadvies?', options: [['Ja, plan een gesprek', 'gestart'], ['Nee', 'nietrelevant']] } },
   { key: 'financien', label: 'Financiën', terughoudend: true, q: { q: 'Zou financiële ondersteuning je helpen om te (blijven) sporten?', options: [['Ja', 'relevant_gevraagd'], ['Nee', 'nietrelevant'], ['Weet niet', 'relevant_gevraagd']] } },
   { key: 'vervoer', label: 'Vervoer', q: { q: 'Kun je zelf naar een sportlocatie komen?', options: [['Ja', 'nietrelevant'], ['Nee', 'relevant_gevraagd'], ['Soms', 'relevant_gevraagd']] } },
   { key: 'hulpmiddelen', label: 'Hulpmiddelen', art9: true, q: { q: 'Gebruik je een sporthulpmiddel of zou je er een willen proberen?', options: [['Ja, ik gebruik er een', 'relevant_gevraagd'], ['Ik wil er een proberen', 'relevant_gevraagd'], ['Nee', 'nietrelevant']] } },
   { key: 'maatje', label: 'Maatje', q: { q: 'Zou je liever samen met iemand sporten?', options: [['Ja, graag', 'relevant_gevraagd'], ['Misschien', 'relevant_gevraagd'], ['Liever alleen', 'nietrelevant']] } },
   { key: 'buurtsportcoach', label: 'Buurtsportcoach', q: { q: 'Wil je dat een buurtsportcoach met je meedenkt?', options: [['Ja', 'relevant_gevraagd'], ['Nee', 'nietrelevant']] } },
-  { key: 'sportzoeker', label: 'Sportzoeker', q: { q: 'Zullen we kijken wat er bij jou in de buurt kan?', options: [['Ja', 'relevant_gevraagd'], ['Nu niet', 'nietrelevant']] } },
+  { key: 'sportzoeker', label: 'Sportzoeker', q: { q: 'Zullen we kijken wat er bij jou in de buurt kan?', options: [['Ja, laat zien', 'gestart'], ['Nu niet', 'nietrelevant']] } },
   { key: 'proefles', label: 'Proefles', q: { q: 'Klaar om het gewoon eens te proberen?', options: [['Plan proefles', 'gestart'], ['Nog niet', 'nietrelevant']] } },
-  { key: 'thuisworkouts', label: 'Thuis workouts', q: { q: 'Wil je thuis alvast beginnen met korte workouts?', options: [['Ja', 'relevant_gevraagd'], ['Nee', 'nietrelevant']] } },
+  { key: 'thuisworkouts', label: 'Thuis workouts', q: { q: 'Wil je thuis alvast beginnen met korte workouts?', options: [['Ja, start een workout', 'gestart'], ['Nee', 'nietrelevant']] } },
   { key: 'inspiratie', label: 'Inspiratie', q: null },
 ];
 
@@ -196,4 +196,86 @@ const RESULTS = {
     { sport: 'Aangepast zwemmen', place: 'Diverse locaties', km: null, tags: ['Individueel'], match: null },
     { sport: 'Fitness onder begeleiding', place: 'Diverse locaties', km: null, tags: ['Individueel'], match: null },
   ],
+};
+
+/* ---------- Drempels oplossen (vervoer, financiën, hulpmiddelen, maatje) ----------
+   Elke drempel heeft een korte check (2-3 vragen) en daarna een advies op maat.
+   'Start aanvraag' zet de actie op Gestart, 'Geregeld' op Afgerond (statussen uit het Actiemodel).
+   Bronnen: factsheet vervoer Uniek Sporten Brabant (2025), unieksporten.nl/hulpmiddelen. Maatje en fondsen zijn illustratief. */
+const FLOWS = {
+  vervoer: {
+    title: 'Vervoer naar je sport regelen', intro: 'Drie korte vragen, dan weet je welke route bij jou past.',
+    gestart: 'Vervoersaanvraag gestart', afgerond: 'Vervoer geregeld',
+    steps: [
+      { key: 'doel', q: 'Waar wil je naartoe?', options: ['Training of proefles bij een club', 'Wedstrijden en competitie door het land', 'Allebei'] },
+      { key: 'afstand', q: 'Waar ligt je sportlocatie?', options: ['Binnen mijn regio', 'Buiten mijn regio'] },
+      { key: 'nu', q: 'Hoe reis je nu meestal?', options: ['Met familie of vrienden', 'Zelf, maar dat lukt niet altijd', 'Met het OV lukt het niet', 'Ik heb al een Wmo-vervoerspas'] },
+    ],
+    advies(a, p) {
+      const out = [], c = p.fields.woonplaats ? p.fields.woonplaats.v : 'je gemeente';
+      const lich = (p.fields.type_beperking ? p.fields.type_beperking.v : []).some(b => /Lichamelijk/.test(b));
+      if (a.nu === 'Ik heb al een Wmo-vervoerspas') out.push({ t: 'Gebruik je Wmo-vervoerspas', d: `Je regiotaxi of deeltaxi mag je ook gebruiken voor ritten naar je sport. Plan je rit naar de training in ${c}.`, how: 'Bel of boek online bij de regiotaxi van je gemeente.' });
+      else if (a.afstand === 'Binnen mijn regio') out.push({ t: 'Wmo-vervoer (regiotaxi of deeltaxi)', d: 'Voor wie niet zelfstandig of met hulp van familie kan reizen, bijvoorbeeld omdat het OV niet lukt.', how: `Vraag een vervoerspas aan bij het Wmo-loket van ${c}.` });
+      if (a.afstand === 'Buiten mijn regio') out.push({ t: 'Valys', d: 'Voor reizen buiten je eigen regio, als je aan de voorwaarden voldoet.', how: 'Vraag een Valyspas aan via pasaanvraag.nl.' });
+      if (a.doel !== 'Training of proefles bij een club' && lich) out.push({ t: 'Sportvervoersvoorziening Special Heroes', d: 'Voor sporters met een lichamelijke beperking die competitie spelen. Je krijgt een kilometerbudget per kalenderjaar, gefinancierd door VWS.', how: 'Meld je aan bij Special Heroes Nederland.' });
+      out.push({ t: 'Vrijwillige vervoersorganisatie of samen reizen', d: 'Lokale vrijwilligers rijden soms ook naar de sport. Of reis samen met een teamgenoot. Tip: begin met een paar proefritten.', how: 'De buurtsportcoach zoekt mee naar wat in jouw buurt kan.' });
+      return out;
+    },
+  },
+  financien: {
+    title: 'Hulp bij de kosten van sporten', intro: 'Twee vragen, dan zie je welke regelingen voor jou kunnen gelden.',
+    gestart: 'Fondsencheck gestart', afgerond: 'Regeling gevonden of aangevraagd',
+    steps: [
+      { key: 'kosten', q: 'Waar zijn de kosten voor?', options: ['Contributie van de club', 'Een sporthulpmiddel', 'Vervoer naar de sport'] },
+      { key: 'leeftijd', q: 'Hoe oud is de sporter?', options: ['Jonger dan 18', '18 jaar of ouder'] },
+    ],
+    advies(a, p) {
+      const out = [], c = p.fields.woonplaats ? p.fields.woonplaats.v : 'je gemeente';
+      if (a.kosten === 'Een sporthulpmiddel') out.push({ t: 'Vergoeding via je gemeente', d: 'De gemeente is je eerste aanspreekpunt voor een vergoeding van een sporthulpmiddel.', how: 'Dien je aanvraag in via het Uniek Sporten Centraal Loket.' });
+      if (a.leeftijd === 'Jonger dan 18') out.push({ t: 'Jeugdfonds Sport & Cultuur', d: 'Betaalt contributie of spullen voor kinderen uit gezinnen met een laag inkomen.', how: 'Aanvragen gaat via een intermediair, zoals school of de buurtsportcoach.' });
+      out.push({ t: `Regelingen van ${c}`, d: 'Veel gemeenten hebben een sport- of minimaregeling die (een deel van) de contributie vergoedt.', how: `Kijk op de site van ${c} of vraag het de buurtsportcoach.` });
+      out.push({ t: 'Vraag de club', d: 'Veel clubs bieden gratis proeflessen, een korting of een gespreide betaling.', how: 'Vraag het bij je proefles.' });
+      return out;
+    },
+  },
+  hulpmiddelen: {
+    title: 'Een sporthulpmiddel regelen', intro: 'Eén vraag, dan weet je of aanschaffen of eerst lenen het beste past.',
+    gestart: 'Aanvraag of uitprobeertraject gestart', afgerond: 'Hulpmiddel in gebruik',
+    steps: [
+      { key: 'fase', q: 'Weet je al welke sport je wilt doen?', options: ['Ja, ik wil een hulpmiddel aanschaffen', 'Nee, ik wil eerst uitproberen'] },
+    ],
+    advies(a) {
+      const lenen = { t: 'Uniek Sporten Uitleen', d: 'Vier maanden gratis een sporthulpmiddel uitproberen. Het wordt persoonlijk gepast en afgesteld, en je krijgt advies over het gebruik.', how: 'Kies je gemeente om te zien of Uitleen bij jou actief is.' };
+      const kopen = { t: 'Aanschaf via je gemeente', d: 'De gemeente is je eerste aanspreekpunt voor een vergoeding. Doet je gemeente mee aan de pilot, dan pakt het Uniek Sporten Centraal Loket je aanvraag op.', how: 'Dien je aanvraag in via de website.' };
+      return a.fase === 'Nee, ik wil eerst uitproberen' ? [lenen, kopen] : [kopen, lenen];
+    },
+  },
+  maatje: {
+    title: 'Een sportmaatje vinden', intro: 'Twee vragen, dan zoeken we iemand met dezelfde sportwens.',
+    gestart: 'Maatje-aanvraag gestart', afgerond: 'Match gemaakt',
+    steps: [
+      { key: 'waarvoor', q: 'Waarvoor zoek je een maatje?', options: ['Samen naar de club gaan', 'Samen trainen', 'Iemand om mee te beginnen'] },
+      { key: 'wanneer', q: 'Wanneer wil je sporten?', options: ['Doordeweeks overdag', 'Doordeweeks \'s avonds', 'In het weekend'] },
+    ],
+    advies(a, p) {
+      const c = p.fields.woonplaats ? p.fields.woonplaats.v : 'jouw buurt';
+      return [
+        { t: `Sportmaatje in ${c}`, d: `We zoeken iemand met dezelfde wens: ${(a.waarvoor || 'samen sporten').toLowerCase()}, ${(a.wanneer || 'wanneer het jou uitkomt').toLowerCase()}.`, how: 'Je krijgt binnen twee weken een voorstel voor een match.' },
+        { t: 'Buurtsportcoach', d: 'De buurtsportcoach kent clubs en mensen in de buurt en kan een eerste keer meegaan.', how: 'Vraag een kennismaking aan.' },
+      ];
+    },
+  },
+};
+const DREMPELS = Object.keys(FLOWS);
+
+// Follow-up op een actie die op Gestart staat (bij het volgende bezoek of in de volgende mail)
+const FOLLOWUP = {
+  vervoer: { q: 'Is het gelukt om je vervoer te regelen?', options: [['Ja, geregeld', 'afgerond'], ['Nog niet', 'gestart'], ['Ik wil hulp', 'help']] },
+  financien: { q: 'Heb je een regeling gevonden of aangevraagd?', options: [['Ja', 'afgerond'], ['Nog niet', 'gestart'], ['Ik wil hulp', 'help']] },
+  hulpmiddelen: { q: 'Is je sporthulpmiddel er al?', options: [['Ja, ik gebruik het', 'afgerond'], ['Nog niet', 'gestart'], ['Ik wil hulp', 'help']] },
+  maatje: { q: 'Heb je al kennisgemaakt met je sportmaatje?', options: [['Ja, we hebben een match', 'afgerond'], ['Nog niet', 'gestart'], ['Ik wil hulp', 'help']] },
+  beweegadvies: { q: 'Heb je je beweegadvies gehad?', options: [['Ja, het gesprek is geweest', 'afgerond'], ['Nog niet', 'gestart']] },
+  sportzoeker: { q: 'Heb je een sport of club gevonden die bij je past?', options: [['Ja, gevonden', 'afgerond'], ['Nog aan het zoeken', 'gestart'], ['Ik wil hulp', 'help']] },
+  proefles: { q: 'Hoe was je proefles?', options: [['Leuk, ik word lid!', 'afgerond', { sportstatus: 'ActiefClub' }], ['Leuk, maar ik twijfel nog', 'afgerond'], ['Nog niet geweest', 'gestart']] },
+  thuisworkouts: { q: 'Hoe gaan de thuisworkouts?', options: [['Goed, ik doe er al een paar', 'afgerond'], ['Nog niet begonnen', 'gestart']] },
 };
