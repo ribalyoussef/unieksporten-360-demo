@@ -1,4 +1,6 @@
-/* Demo 360 graden klantprofiel · Uniek Sporten x Techonomy */
+/* Demo 360 graden klantprofiel · Uniek Sporten x Techonomy
+   De logica volgt de sheet: Actiemodel (triggers + prioriteit), Beperking x Actie (wie welke vraag krijgt),
+   Klantreisfase (afleidregels) en de spelregels (max. 1 vraag per bezoek, antwoord is leidend, gedrag mag een vraag overslaan). */
 (() => {
   const $ = s => document.querySelector(s);
   const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -6,83 +8,150 @@
 
   const state = {
     pkey: 'anon', page: 'home', p: clone(PERSONAS.anon),
-    panel: window.innerWidth >= 1200, labels: true, tour: null, flash: new Set(), toastClosed: false,
+    panel: window.innerWidth >= 1200, labels: true, tour: null, flash: new Set(),
+    toastClosed: false, askedThisVisit: false, pick: [], consent: false,
   };
 
-  /* ---------- logica ---------- */
-  const val = (p, k) => p.profile[k] ? p.profile[k].v : null;
-  const active = s => s === 'relevant' || s === 'gestart';
-  const nba = p => (ACTIONS.find(a => a.key !== 'inspiratie' && active(p.acties[a.key])) || ACTIONS.find(a => a.key === 'inspiratie')).key;
-  const filled = p => FIELDS.filter(x => p.profile[x.key]).length;
+  /* ================= Engine ================= */
+  const fld = (p, k) => p.fields[k] ? p.fields[k].v : null;
+  const arr = v => v == null ? [] : Array.isArray(v) ? v : [v];
+  const has = (p, k, ...vals) => arr(fld(p, k)).some(x => vals.includes(x));
+  const src = (p, ...keys) => keys.some(k => p.fields[k] && p.fields[k].src === 'gevraagd') ? 'relevant_gevraagd' : 'relevant_signaal';
+  const isRel = s => s === 'relevant_gevraagd' || s === 'relevant_signaal';
+  const isActive = s => isRel(s) || s === 'gestart';
+  const beperkingen = p => arr(fld(p, 'type_beperking'));
+  const mainB = p => beperkingen(p)[0] || null;
+  const city = p => fld(p, 'woonplaats');
+  const sporterRoute = p => !fld(p, 'type_bezoeker') || has(p, 'type_bezoeker', 'Sporter', 'Ouder');
 
-  function fase(p) {
-    if (p.key === 'mark') return { n: 2, why: 'Profiel compleet, nog geen beweegadvies of sport gekozen' };
-    if (p.key === 'kim') return { n: 3, why: 'Sportzoeker afgerond, proefles nog niet gestart' };
-    if (p.key === 'henk') return { n: 3, why: 'Beweegadvies afgerond, zoekt nu een club' };
-    const c = filled(p);
-    return c >= 3 ? { n: 2, why: `${c} profielvelden bekend: we weten wie het is` } : { n: 1, why: c ? `${c} van 8 profielvelden bekend` : 'We weten nog (bijna) niets' };
+  // Spelregel 2: per actie de hoogste waarde over alle beperkingen (R > V > N)
+  function matrix(p, a) {
+    const bs = beperkingen(p);
+    if (!bs.length) return null;
+    const i = MATRIX_COLS.indexOf(a);
+    const vals = bs.map(b => (MATRIX[b] || 'VVVVVVVVVV')[i]);
+    return vals.includes('R') ? 'R' : vals.includes('V') ? 'V' : 'N';
   }
 
-  const beperking = p => {
-    const b = val(p, 'type_beperking') || '';
-    if (/NAH/.test(b)) return 'NAH';
-    if (/Chronisch/.test(b)) return 'Chronisch';
-    if (/Lichamelijk/.test(b)) return 'Lichamelijk';
-    if (/Visueel/.test(b)) return 'Visueel';
+  // Actiemodel: 'Wanneer Relevant (trigger)'
+  function trigger(p, a) {
+    switch (a) {
+      case 'beweegadvies':
+        if (has(p, 'sportstatus', 'Inactief', 'InactiefMetSportwens') || has(p, 'sportervaring', 'Beginner', 'Herintreder')) return src(p, 'sportstatus', 'sportervaring');
+        return null;
+      case 'buurtsportcoach':
+        return has(p, 'vertrouwen_sporten', 'Laag') ? src(p, 'vertrouwen_sporten') : null;
+      case 'sportzoeker':
+        return has(p, 'sportstatus', 'InactiefMetSportwens', 'ActiefZonderClub') && has(p, 'sportvoorkeur', 'Vereniging', 'Sportschool', 'Buiten') ? src(p, 'sportstatus') : null;
+      case 'proefles': {
+        const block = ['vervoer', 'financien'].some(x => isActive(status(p, x)));
+        return status(p, 'sportzoeker') === 'afgerond' && !block ? 'relevant_signaal' : null;
+      }
+      case 'thuisworkouts':
+        return has(p, 'sportvoorkeur', 'Thuis') ? src(p, 'sportvoorkeur') : has(p, 'vertrouwen_sporten', 'Laag') ? src(p, 'vertrouwen_sporten') : null;
+      case 'inspiratie':
+        return 'relevant_signaal'; // altijd relevant als instap
+      default: return null;
+    }
+  }
+
+  // Spelregel 1: het antwoord (progress) gaat voor alles. Daarna de trigger, dan passieve signalen (spelregel 4).
+  function status(p, a) {
+    if (p.progress[a]) return p.progress[a];
+    const t = trigger(p, a);
+    if (t) return t;
+    if (p.signals[a]) return 'relevant_signaal';
+    return 'onbekend';
+  }
+
+  // next_best_action: eerste actie in Actiemodel-volgorde met status Relevant of Gestart
+  const nba = p => (ACTIONS.find(a => isActive(status(p, a.key))) || ACTIONS.at(-1)).key;
+
+  const filledCount = p => FIELDS.filter(x => p.fields[x.key]).length;
+
+  // Tab Klantreisfase: afleidregels
+  function fase(p) {
+    const s = a => status(p, a), done = a => s(a) === 'afgerond';
+    const drempelOpen = ['vervoer', 'hulpmiddelen', 'financien', 'maatje'].some(a => isActive(s(a)));
+    const randOk = ['vervoer', 'hulpmiddelen', 'financien', 'maatje'].every(a => ['afgerond', 'nietrelevant', 'onbekend'].includes(s(a)));
+    if (has(p, 'sportstatus', 'ActiefClub') && (done('proefles') || p.workoutsDone >= 5)) return { n: 6, why: 'sportstatus = ActiefClub' };
+    if (has(p, 'sportstatus', 'ActiefZonderClub') && (done('proefles') || p.workoutsDone >= 3)) return { n: 5, why: `sportstatus = ActiefZonderClub en ${done('proefles') ? 'proefles afgerond' : p.workoutsDone + ' thuisworkouts gedaan'}` };
+    if ((s('proefles') === 'gestart' || s('thuisworkouts') === 'gestart') && randOk) return { n: 4, why: `${s('proefles') === 'gestart' ? 'actie_proefles' : 'actie_thuisworkouts'} = Gestart` };
+    if ((done('sportzoeker') || done('beweegadvies')) && drempelOpen) return { n: 3, why: `${done('sportzoeker') ? 'actie_sportzoeker' : 'actie_beweegadvies'} afgerond, drempel open` };
+    if (done('sportzoeker') || done('beweegadvies')) return { n: 3, why: `${done('sportzoeker') ? 'actie_sportzoeker' : 'actie_beweegadvies'} afgerond, richting is er` };
+    if (filledCount(p) >= 4) return { n: 2, why: `fundament ${filledCount(p)} van 8 gevuld, nog geen richting` };
+    return { n: 1, why: filledCount(p) ? `fundament ${filledCount(p)} van 8 gevuld` : 'we weten nog (bijna) niets' };
+  }
+
+  // Volgende vraag in de wachtrij: eerst het fundament, daarna V-vragen uit de matrix in NBA-volgorde
+  function nextQuestion(p) {
+    for (const k of FIELD_ORDER) {
+      if (p.fields[k]) continue;
+      if ((k === 'type_beperking' || k === 'sportstatus') && !sporterRoute(p)) continue;
+      return { kind: 'field', key: k, ...FIELD_QUESTIONS[k] };
+    }
+    if (!sporterRoute(p)) return null;
+    for (const a of ACTIONS) {
+      if (!a.q || status(p, a.key) !== 'onbekend') continue;
+      if (matrix(p, a.key) !== 'V') continue;
+      return { kind: 'action', key: a.key, q: a.q.q, sub: 'Je antwoord bepaalt wat we je laten zien.', options: a.q.options };
+    }
     return null;
-  };
+  }
 
-  const city = p => val(p, 'woonplaats');
-  const name = p => p.first;
-
-  /* ---------- content per next best action ---------- */
+  /* ================= Content ================= */
   function nbaContent(key, p) {
-    const c = city(p), n = name(p);
+    const c = city(p), b = mainB(p);
     const map = {
-      beweegadvies: { icon: '☎', title: 'Gratis persoonlijk beweegadvies', text: `Een beweegadviseur belt je binnen een week en denkt met je mee: wat past bij jou${beperking(p) === 'NAH' ? ' na je herseninfarct' : ''}? Zonder verplichtingen.`, cta: 'Plan een gesprek', go: 'home' },
-      vervoer: { icon: '🚐', title: 'Regel je vervoer naar de training', text: `Met Valys of de regiotaxi${c ? ' in ' + c : ''} kom je zonder gedoe bij de club. We zoeken uit wat voor jou geldt.`, cta: 'Bekijk vervoersopties', go: 'home' },
-      hulpmiddelen: { icon: '♿', title: 'Probeer een sporthulpmiddel', text: 'Leen eerst, beslis later. Bekijk welke sporthulpmiddelen je gratis kunt uitproberen.', cta: 'Bekijk hulpmiddelen', go: 'home' },
-      maatje: { icon: '🤝', title: `Sporten met een sportmaatje${c ? ' in ' + c : ''}`, text: 'Samen is de eerste stap makkelijker. We koppelen je aan een maatje met dezelfde sportwens.', cta: 'Vind een sportmaatje', go: 'home' },
-      buurtsportcoach: { icon: '💬', title: 'Een buurtsportcoach denkt met je mee', text: `${c ? 'De buurtsportcoach in ' + c : 'Een buurtsportcoach'} helpt je kosteloos op weg, in een tempo dat bij je past.`, cta: 'Neem contact op', go: 'home' },
-      sportzoeker: { icon: '🔍', title: `Vind een club${c ? ' in ' + c : ' bij jou in de buurt'}`, text: `We hebben de Sportzoeker al voor je ingevuld${beperking(p) ? ' met ' + (beperking(p) === 'NAH' ? 'NAH' : beperking(p).toLowerCase()) : ''}${c ? ' en ' + c : ''}. Bekijk de best passende sporten.`, cta: 'Bekijk jouw resultaten', go: 'sportzoeker' },
-      proefles: { icon: '🏀', title: `Plan je proefles rolstoelbasketbal`, text: `Bij de club in Amsterdam Nieuw-West (3,2 km). Een sportrolstoel staat klaar en de eerste les is gratis.`, cta: 'Plan je proefles', go: 'sportzoeker' },
-      thuisworkouts: { icon: '▶', title: 'Begin thuis, in 7 minuten', text: 'Start met een korte workout uit Uniek Sporten Thuis. Op jouw tempo, wanneer het jou uitkomt.', cta: 'Start de workout', go: 'home' },
-      financien: { icon: '€', title: 'Hulp bij de kosten', text: 'Fondsen en regelingen die je sport betaalbaar maken.', cta: 'Doe de fondsencheck', go: 'home' },
-      inspiratie: { icon: '★', title: 'Lees hoe anderen begonnen', text: 'Echte verhalen van sporters met een beperking. Misschien zit jouw sport ertussen.', cta: 'Lees de verhalen', go: 'home' },
+      beweegadvies: { icon: '☎', title: 'Gratis persoonlijk beweegadvies', text: `Een beweegadviseur denkt met je mee over wat bij jou past${b === 'NAH' ? ' na je hersenletsel' : ''}. Telefonisch en zonder verplichtingen.`, cta: 'Vraag beweegadvies aan', go: 'home', mail: 'Ontdek wat bij je past' },
+      financien: { icon: '€', title: 'Hulp bij de kosten van sporten', text: 'Doe de fondsencheck: welke regelingen en fondsen maken jouw sport betaalbaar?', cta: 'Start de fondsencheck', go: 'home', mail: 'Drempel: financiën' },
+      vervoer: { icon: '🚐', title: 'Regel je vervoer naar de sport', text: `Met Valys of de regiotaxi${c ? ' in ' + c : ''} kom je zonder gedoe bij de club. We zoeken uit wat voor jou geldt.`, cta: 'Bekijk vervoersopties', go: 'home', mail: 'Drempel: vervoer' },
+      hulpmiddelen: { icon: '♿', title: 'Probeer een sporthulpmiddel', text: 'Bekijk welke sporthulpmiddelen je kunt aanschaffen of lenen, en vraag er een aan.', cta: 'Bekijk hulpmiddelen', go: 'home', mail: 'Drempel: hulpmiddelen' },
+      maatje: { icon: '🤝', title: `Sporten met een sportmaatje${c ? ' in ' + c : ''}`, text: 'Samen is de stap naar een club makkelijker. We koppelen je aan een maatje met dezelfde sportwens.', cta: 'Vind een sportmaatje', go: 'home', mail: 'Drempel: maatje' },
+      buurtsportcoach: { icon: '💬', title: 'Een buurtsportcoach denkt met je mee', text: `${c ? 'De buurtsportcoach in ' + c : 'Een buurtsportcoach'} helpt je kosteloos op weg, in jouw tempo.`, cta: 'Neem contact op', go: 'home', mail: 'Vangnet: buurtsportcoach' },
+      sportzoeker: { icon: '🔍', title: `Vind een club${c ? ' in ' + c : ' bij jou in de buurt'}`, text: `De Sportzoeker staat al voor je klaar${c ? ' met ' + c : ''}${b ? ' en je beperking' : ''}. Bekijk de sporten die het best bij je passen.`, cta: 'Bekijk jouw resultaten', go: 'sportzoeker', mail: 'Ontdek wat bij je past' },
+      proefles: { icon: '🏀', title: 'Plan je proefles', text: p.key === 'kim' ? 'Rolstoelbasketbal in Amsterdam Nieuw-West (3,2 km). Neem je eigen sportrolstoel mee, de eerste les is gratis.' : 'Je hebt een sport gevonden. Probeer het gewoon eens, de eerste les is vaak gratis.', cta: 'Plan je proefles', go: 'sportzoeker', mail: 'Proefles' },
+      thuisworkouts: { icon: '▶', title: 'Begin thuis met een korte workout', text: 'Uniek Sporten Thuis: korte workouts op jouw tempo, wanneer het jou uitkomt.', cta: 'Start een workout', go: 'home', mail: 'Thuis beginnen' },
+      inspiratie: { icon: '★', title: 'Lees hoe anderen begonnen', text: 'Echte verhalen van sporters met een beperking. Misschien zit jouw sport ertussen.', cta: 'Lees de verhalen', go: 'home', mail: 'Inspiratie' },
     };
     return map[key];
   }
 
   function hero(p) {
-    if (p.key === 'mark') return { eyebrow: 'Welkom terug, Mark', t1: 'Weer in beweging', t2: 'na je herseninfarct.', text: 'Stefan en Yolanda gingen je voor: met kleine stappen terug naar sport. Wij helpen je met de eerste, op jouw tempo en zonder druk.', img: STORIES[1].img, why: 'type_beperking = NAH · sportervaring = herintreder' };
-    if (p.key === 'kim') return { eyebrow: 'Welkom terug, Kim', t1: 'Klaar voor', t2: 'teamsport, Kim?', text: 'Je hebt rolstoelbasketbal in Amsterdam gevonden en je sportrolstoel geregeld. Nog één stap: je eerste training.', img: IMG.hulpmiddelHome, why: 'sportvoorkeur = rolstoelbasketbal · sportzoeker = afgerond' };
-    if (p.key === 'henk') return { eyebrow: 'Welkom terug, Henk', t1: 'Blijven bewegen', t2: 'met Parkinson.', text: 'Klimmen, boksen, wandelen: steeds meer clubs in Eindhoven hebben een groep voor mensen met Parkinson. Samen sporten houdt je in beweging.', img: STORIES[2].img, why: 'type_beperking = chronisch · woonplaats = Eindhoven · ambitie = sociaal' };
-    const b = beperking(p);
+    if (p.key === 'mark') return { eyebrow: 'Welkom terug, Mark', t1: 'Weer in beweging', t2: 'na je herseninfarct.', text: 'Stefan en Yolanda gingen je voor: met kleine stappen terug naar sport. Wij helpen je met de eerste, op jouw tempo.', img: STORIES[1].img, why: 'type_beperking = NAH · sportervaring = Herintreder' };
+    if (p.key === 'kim') return { eyebrow: 'Welkom terug, Kim', t1: 'Klaar voor', t2: 'teamsport, Kim?', text: 'Je hebt rolstoelbasketbal in Amsterdam gevonden en je sportrolstoel is geregeld. Tijd voor de volgende stap.', img: IMG.hulpmiddelHome, why: 'sportvoorkeur = rolstoelbasketbal · actie_sportzoeker = Afgerond' };
+    if (p.key === 'henk') return { eyebrow: 'Welkom terug, Henk', t1: 'Blijven bewegen', t2: 'met Parkinson.', text: 'Je doet al thuisworkouts. Steeds meer clubs in Eindhoven hebben een groep voor mensen met Parkinson: klimmen, boksen, wandelen. Samen sporten houdt je in beweging.', img: STORIES[2].img, why: 'type_beperking = Chronisch · woonplaats = Eindhoven · beweegambitie = Sociaal' };
+    const tb = fld(p, 'type_bezoeker');
+    if (tb && !sporterRoute(p)) return { eyebrow: `Voor ${tb === 'Club' ? 'sportclubs' : tb.toLowerCase() + 's'}`, t1: 'Samen meer mensen', t2: 'aan het sporten.', text: 'Verwijzen, begeleiden of aanbod opzetten: hier vind je materiaal, cijfers en contactpersonen voor jouw rol.', img: STORIES[7].img, why: `type_bezoeker = ${tb}` };
+    const b = mainB(p);
     if (b) {
       const s = STORIES.find(x => x.tags.includes(b));
-      const w = { NAH: ['NAH', 'NAH'], Chronisch: ['een chronische aandoening', 'chronische aandoeningen'], Lichamelijk: ['een lichamelijke beperking', 'lichamelijke beperkingen'], Visueel: ['een visuele beperking', 'visuele beperkingen'] }[b];
-      return { eyebrow: val(p, 'type_bezoeker') === 'Ouder of naaste' ? 'Voor jouw kind of naaste' : 'Speciaal voor jou', t1: `Sporten met ${w[0]}?`, t2: 'Zo begin je.', text: `Honderden sportaanbieders hebben ervaring met ${w[1]}. ${city(p) ? 'We laten je zien wat er in ' + city(p) + ' kan.' : 'Vertel ons waar je woont, dan zoeken we mee.'}`, img: s ? s.img : IMG.zoekjerot, why: `type_beperking = ${b}` };
+      const w = BEPERKING_ZIN[b];
+      const ouder = tb === 'Ouder';
+      return { eyebrow: ouder ? 'Voor jouw kind' : 'Speciaal voor jou', t1: `Sporten met ${w[0]}?`, t2: 'Zo begin je.', text: `Honderden sportaanbieders hebben ervaring met ${w[1]}. ${city(p) ? 'We laten je zien wat er in ' + city(p) + ' kan.' : 'Vertel ons waar je woont, dan zoeken we mee.'}`, img: s ? s.img : IMG.zoekjerot, why: `type_beperking = ${b}${ouder ? ' · type_bezoeker = Ouder' : ''}` };
     }
     return null;
   }
 
   function stories(p) {
-    const b = beperking(p), c = city(p);
-    if (!b) return ['stefan', 'marathon', 'wk'].map(id => STORIES.find(s => s.id === id));
-    const score = s => (s.tags.includes(b) ? 10 : 0) + (c && s.tags.includes(c) ? 5 : 0) + (s.tags.includes('algemeen') ? 1 : 0);
+    const bs = beperkingen(p), c = city(p);
+    if (!bs.length) return ['stefan', 'marathon', 'wk'].map(id => STORIES.find(s => s.id === id));
+    const score = s => (s.tags.some(t => bs.includes(t)) ? 10 : 0) + (c && s.tags.includes(c) ? 5 : 0) + (has(p, 'sportervaring', 'Herintreder') && s.tags.includes('Herintreder') ? 3 : 0) + (s.tags.includes('algemeen') ? 1 : 0);
     return [...STORIES].sort((a, z) => score(z) - score(a)).slice(0, 3);
   }
 
   function workouts(p) {
-    const b = beperking(p), low = val(p, 'vertrouwen_sporten') === 'Laag';
-    return [...WORKOUTS].sort((a, z) => ((z.tags.includes(b) ? 2 : 0) + (low && z.tags.includes('laag') ? 1 : 0)) - ((a.tags.includes(b) ? 2 : 0) + (low && a.tags.includes('laag') ? 1 : 0))).slice(0, 3);
+    const bs = beperkingen(p), low = has(p, 'vertrouwen_sporten', 'Laag');
+    const sc = w => (w.tags.some(t => bs.includes(t)) ? 2 : 0) + (low && w.tags.includes('Laag') ? 1 : 0);
+    return [...WORKOUTS].sort((a, z) => sc(z) - sc(a)).slice(0, 3);
   }
 
-  /* ---------- UI helpers ---------- */
-  const tag = why => state.labels && why ? `<span class="pz-tag" title="Gepersonaliseerd op basis van het profiel"><b>Gepersonaliseerd</b> ${esc(why)}</span>` : '';
+  /* ================= UI helpers ================= */
+  const tag = why => state.labels && why ? `<span class="pz-tag"><b>Gepersonaliseerd</b> ${esc(why)}</span>` : '';
   const pz = why => state.labels && why ? ' pz' : '';
+  const show = v => Array.isArray(v) ? v.join(', ') : v;
 
-  /* ---------- demobalk ---------- */
+  /* ================= Demobalk ================= */
   function renderBar() {
     const persons = ['anon', 'mark', 'kim', 'henk'].map(k => {
       const x = PERSONAS[k];
@@ -100,7 +169,7 @@
       </div>`;
   }
 
-  /* ---------- site header/footer ---------- */
+  /* ================= Site ================= */
   function header(p) {
     return `
     <div class="us-top"><div class="wrap">
@@ -117,14 +186,14 @@
   const footer = () => `<footer class="us-foot"><div class="wrap">
       <img src="${IMG.logo}" alt="Uniek Sporten">
       <div><b>Uniek Sporten</b><br>Een initiatief van Fonds Gehandicaptensport</div>
-      <div class="demo-note">Demo voor de jaarplansessie 2027 · Techonomy. Verhalen, workouts en beelden komen van unieksporten.nl. Personas, clubs en afstanden zijn illustratief.</div>
+      <div class="demo-note">Demo voor de jaarplansessie 2027 · Techonomy. Velden, waardes, klantreisfases en regels komen uit het 360-graden-datamodel. Verhalen, workouts en beelden komen van unieksporten.nl. Personas, clubs en afstanden zijn illustratief.</div>
     </div></footer>`;
 
-  /* ---------- pagina: home ---------- */
   function home(p) {
-    const h = hero(p);
-    const nk = nba(p), nc = nbaContent(nk, p);
-    const showNba = p.key !== 'anon' || beperking(p);
+    const h = hero(p), nk = nba(p), nc = nbaContent(nk, p);
+    const known = p.key !== 'anon' || filledCount(p) > 0;
+    const nbaWhy = `next_best_action = actie_${nk}`;
+
     const heroHtml = h ? `
       <section class="hero${pz(h.why)}">${tag(h.why)}<div class="wrap hero-grid">
         <div><p class="eyebrow">${esc(h.eyebrow)}</p><h1>${esc(h.t1)}<br><span>${esc(h.t2)}</span></h1><p class="lead">${esc(h.text)}</p>
@@ -135,8 +204,8 @@
         <div class="btns"><button class="btn or">Start onze AI-assistent</button><button class="btn nv">Uniek Sporten Blessurevrij</button></div></div>
         <div class="hero-img"><img src="${IMG.zoekjerot}" alt=""></div></div></section>`;
 
-    const nbaHtml = showNba ? `
-      <section class="nba-band"><div class="wrap"><div class="nba${pz('next_best_action = ' + nk)}">${tag('next_best_action = ' + nk)}
+    const nbaHtml = known ? `
+      <section class="nba-band"><div class="wrap"><div class="nba${pz(nbaWhy)}">${tag(nbaWhy)}
         <div class="nba-ic">${nc.icon}</div>
         <div class="nba-t"><p class="eyebrow">Jouw volgende stap</p><h2>${esc(nc.title)}</h2><p>${esc(nc.text)}</p></div>
         <button class="btn or" data-go="${nc.go}">${esc(nc.cta)} →</button>
@@ -148,46 +217,45 @@
       { k: 'hulpmiddelen', t: 'Hulpmiddelen', img: IMG.tileHulp },
       { k: 'beweegadvies', t: 'Beweegadvies', img: IMG.tileAdvies },
     ];
-    const rank = t => p.key === 'anon' && !beperking(p) ? 0 : (t.k === nk ? 3 : p.acties[t.k] === 'gestart' ? 2 : p.acties[t.k] === 'relevant' ? 1 : p.acties[t.k] === 'afgerond' ? -1 : 0);
-    const sorted = [...tiles].sort((a, z) => rank(z) - rank(a));
+    const rank = t => !known ? 0 : (t.k === nk ? 3 : status(p, t.k) === 'gestart' ? 2 : isRel(status(p, t.k)) ? 1 : status(p, t.k) === 'afgerond' ? -1 : 0);
     const badge = t => {
-      if (p.key === 'anon' && !beperking(p)) return '';
+      if (!known) return '';
+      const s = status(p, t.k);
       if (t.k === nk) return '<span class="badge or">Jouw volgende stap</span>';
-      const s = p.acties[t.k];
       if (s === 'gestart') return '<span class="badge nv">Ga verder</span>';
-      if (s === 'relevant') return '<span class="badge lt">Past bij jou</span>';
-      if (s === 'afgerond') return '<span class="badge ok">✓ Gedaan</span>';
+      if (isRel(s)) return '<span class="badge lt">Past bij jou</span>';
+      if (s === 'afgerond') return '<span class="badge ok">✓ Afgerond</span>';
       return '';
     };
-    const personalTiles = !(p.key === 'anon' && !beperking(p));
     const tilesHtml = `
-      <section class="gray-sec"><div class="wrap${pz(personalTiles ? 'volgorde op actiestatussen' : '')}">${personalTiles ? tag('volgorde op actiestatussen') : ''}
+      <section class="gray-sec"><div class="wrap${pz(known ? 'volgorde op actiestatussen' : '')}">${known ? tag('volgorde op actiestatussen') : ''}
         <h2 class="sec-t">Waarmee kunnen wij je helpen?</h2>
-        <div class="tiles">${sorted.map(t => `<a class="tile ${t.k === nk && personalTiles ? 'hl' : ''}" ${t.go ? `data-page="${t.go}"` : ''}>${badge(t)}<h3>${t.t}</h3><img src="${t.img}" alt=""></a>`).join('')}</div>
+        <div class="tiles">${[...tiles].sort((a, z) => rank(z) - rank(a)).map(t => `<a class="tile ${t.k === nk && known ? 'hl' : ''}" ${t.go ? `data-page="${t.go}"` : ''}>${badge(t)}<h3>${t.t}</h3><img src="${t.img}" alt=""></a>`).join('')}</div>
       </div></section>`;
 
-    const st = stories(p);
-    const stWhy = beperking(p) ? `verhalen over ${beperking(p) === 'Lichamelijk' ? 'lichamelijke beperking' : beperking(p)}` : '';
+    const st = stories(p), b = mainB(p);
+    const stWhy = b ? `type_beperking = ${b}` : '';
     const storiesHtml = `
       <section class="sec"><div class="wrap${pz(stWhy)}">${tag(stWhy)}
-        <div class="sec-h"><h2 class="sec-t">${beperking(p) ? 'Verhalen die bij jou passen' : 'Inspiratie en verhalen'}</h2><a class="btn or sm" href="${SITE}/actueel/nieuws" target="_blank" rel="noopener">Meer nieuws</a></div>
+        <div class="sec-h"><h2 class="sec-t">${b ? 'Verhalen die bij jou passen' : 'Inspiratie en verhalen'}</h2><a class="btn or sm" href="${SITE}/actueel/nieuws" target="_blank" rel="noopener">Meer nieuws</a></div>
         <div class="stories">
           <a class="story big" href="${st[0].url}" target="_blank" rel="noopener"><img src="${st[0].img}" alt=""><span>${esc(st[0].title)}</span></a>
           <div class="stack">${st.slice(1).map(s => `<a class="story" href="${s.url}" target="_blank" rel="noopener"><img src="${s.img}" alt=""><span>${esc(s.title)}</span></a>`).join('')}</div>
         </div></div></section>`;
 
-    const showW = active(p.acties.thuisworkouts);
+    const ts = status(p, 'thuisworkouts');
+    const showW = isActive(ts) || ts === 'afgerond';
     const wo = workouts(p);
-    const woWhy = `thuisworkouts = ${p.acties.thuisworkouts}${val(p, 'vertrouwen_sporten') === 'Laag' ? ' · vertrouwen = laag' : ''}`;
+    const woWhy = `actie_thuisworkouts = ${STATUS_LABEL[ts]}${p.workoutsDone ? ' · ' + p.workoutsDone + ' workouts gedaan' : ''}`;
     const workoutHtml = showW ? `
       <section class="sec thuis"><div class="wrap${pz(woWhy)}">${tag(woWhy)}
-        <div class="sec-h"><h2 class="sec-t">${p.acties.thuisworkouts === 'gestart' ? `Ga verder waar je gebleven was, ${esc(name(p))}` : 'Alvast thuis beginnen?'}</h2><span class="muted">Uniek Sporten Thuis</span></div>
+        <div class="sec-h"><h2 class="sec-t">${p.workoutsDone ? `Nieuwe workouts voor jou, ${esc(p.first)}` : 'Alvast thuis beginnen?'}</h2><span class="muted">Uniek Sporten Thuis</span></div>
         <div class="workouts">${wo.map(w => `<div class="wo"><div class="wo-img"><img src="${w.img}" alt=""><span class="play">▶</span></div><b>${esc(w.title)}</b><small>⏱ ${w.min} min</small></div>`).join('')}</div>
       </div></section>` : '';
 
     const c = city(p);
     const loc = c ? LOCAL.filter(l => l.near.includes(c)) : [];
-    const localItems = [...loc, ...LOCAL.filter(l => !loc.includes(l) && l.near.length === 0), ...LOCAL.filter(l => !loc.includes(l))].filter((v, i, a) => a.indexOf(v) === i).slice(0, 2);
+    const localItems = [...loc, ...LOCAL.filter(l => !loc.includes(l))].slice(0, 2);
     const localHtml = `
       <section class="gray-sec"><div class="wrap${pz(c ? 'woonplaats = ' + c : '')}">${c ? tag('woonplaats = ' + c) : ''}
         <h2 class="sec-t">${c ? 'Bij jou in de buurt' : 'Lokaal nieuws & agenda'}</h2>
@@ -196,12 +264,12 @@
           ${localItems.map(l => `<a class="local-item" href="${l.url}" target="_blank" rel="noopener"><img src="${l.img}" alt=""><div><span class="region">${esc(l.region)}</span><b>${esc(l.title)}</b></div></a>`).join('')}
         </div></div></section>`;
 
-    const sz = szFields(p);
+    const sz = szFields(p), auto = sz.some(x => x.auto);
     const szHtml = `
       <section class="sz-teaser"><div class="wrap sz-grid">
-        <div class="${pz(sz.some(x => x.auto) ? 'velden uit het profiel' : '')}">${sz.some(x => x.auto) ? tag('velden uit het profiel') : ''}
+        <div class="${pz(auto ? 'velden uit het profiel' : '')}">${auto ? tag('velden uit het profiel') : ''}
           <h2 class="sec-t">Vind je Unieke Sport</h2>
-          <div class="sz-form">${sz.map(x => `<label class="${x.wide ? 'wide' : ''} ${x.auto ? 'auto' : ''}"><span>${x.label}</span><div>${x.v ? esc(x.v) : `<i>${x.ph}</i>`}${x.auto ? '<em>uit je profiel</em>' : ''}</div></label>`).join('')}</div>
+          <div class="sz-form">${szForm(sz)}</div>
           <div class="btns"><button class="btn or" data-page="sportzoeker">Zoek je sportclub</button><button class="btn nv" data-page="sportzoeker">Zoeken op kaart</button></div>
         </div>
         <div class="map">${mapSvg(p)}</div>
@@ -211,23 +279,19 @@
   }
 
   function szFields(p) {
-    const presets = {
-      mark: { sport: 'Fitness, zwemmen, wandelen', age: '50 tot 65 jaar' },
-      kim: { sport: 'Rolstoelbasketbal', age: '18 tot 30 jaar' },
-      henk: { sport: 'Klimmen, boksen', age: '50 tot 65 jaar' },
-    }[p.key] || {};
-    const c = city(p), b = val(p, 'type_beperking');
+    const c = city(p), bs = beperkingen(p);
+    const sport = arr(fld(p, 'sportvoorkeur')).filter(x => !['Thuis', 'Buiten', 'Vereniging', 'Sportschool'].includes(x)).join(', ');
     return [
       { label: 'Postcode/woonplaats', v: c, auto: !!c, ph: 'Geef een locatie op' },
       { label: 'Hoe ver wil je reizen?', v: '< 15 km', ph: '' },
-      { label: 'Welke sport(en) vind je leuk?', v: presets.sport, auto: !!presets.sport, ph: 'Zoek en selecteer sporten', wide: true },
-      { label: 'Wat is je leeftijdscategorie?', v: presets.age, auto: !!presets.age, ph: 'Zoek en selecteer leeftijdscategorie', wide: true },
-      { label: 'Welk type beperking of aandoening heb je?', v: b, auto: !!b, ph: 'Zoek en selecteer beperking', wide: true },
+      { label: 'Welke sport(en) vind je leuk?', v: sport, auto: !!sport, ph: 'Zoek en selecteer sporten', wide: true },
+      { label: 'Wat is je leeftijdscategorie?', v: '', ph: 'Zoek en selecteer leeftijdscategorie', wide: true },
+      { label: 'Welk type beperking of aandoening heb je?', v: bs.map(b => BEPERKING_LABEL[b]).join(', '), auto: bs.length > 0, ph: 'Zoek en selecteer beperking', wide: true },
     ];
   }
+  const szForm = sz => sz.map(x => `<label class="${x.wide ? 'wide' : ''} ${x.auto ? 'auto' : ''}"><span>${x.label}</span><div>${x.v ? esc(x.v) : `<i>${x.ph}</i>`}${x.auto ? '<em>uit je profiel</em>' : ''}</div></label>`).join('');
 
   function mapSvg(p) {
-    // Gestileerde kaart: oranje clusters, met de woonplaats gemarkeerd
     const pts = [[52, 18], [60, 22], [70, 20], [48, 30], [58, 34], [68, 32], [78, 30], [44, 42], [54, 46], [64, 44], [74, 42], [40, 54], [50, 58], [60, 56], [70, 58], [80, 54], [46, 68], [56, 70], [66, 72], [62, 84], [72, 82]];
     const cities = { Amsterdam: [47, 40], Utrecht: [55, 52], Eindhoven: [58, 74], Rotterdam: [40, 58] };
     const c = city(p), cc = c && cities[c];
@@ -239,25 +303,22 @@
     </svg>`;
   }
 
-  /* ---------- pagina: sportzoeker ---------- */
   function sportzoeker(p) {
-    const res = RESULTS[p.key] || RESULTS.anon;
-    const personal = p.key !== 'anon';
-    const sz = szFields(p);
-    const nk = nba(p);
+    const res = RESULTS[p.key] || RESULTS.anon, personal = p.key !== 'anon';
+    const sz = szFields(p), auto = sz.some(x => x.auto), nk = nba(p);
     return header(p) + `
       <section class="sec"><div class="wrap">
         <p class="crumbs">Home › Voor sporters › Sport zoeken</p>
         <div class="szp">
-          <div class="szp-form${pz(sz.some(x => x.auto) ? 'ingevuld vanuit het profiel' : '')}">${sz.some(x => x.auto) ? tag('ingevuld vanuit het profiel') : ''}
+          <div class="szp-form${pz(auto ? 'ingevuld vanuit het profiel' : '')}">${auto ? tag('ingevuld vanuit het profiel') : ''}
             <h1 class="sec-t">Vind je Unieke Sport</h1>
-            <div class="sz-form col">${sz.map(x => `<label class="${x.auto ? 'auto' : ''}"><span>${x.label}</span><div>${x.v ? esc(x.v) : `<i>${x.ph}</i>`}${x.auto ? '<em>uit je profiel</em>' : ''}</div></label>`).join('')}</div>
+            <div class="sz-form col">${szForm(sz)}</div>
             <button class="btn or full">Zoek je sportclub</button>
-            ${!personal ? '<p class="muted small">Tip: vul je woonplaats en beperking in, dan sorteren we op wat het best bij je past.</p>' : ''}
+            ${!auto ? '<p class="muted small">Vul je woonplaats en beperking in, dan sorteren we op wat het best bij je past.</p>' : ''}
           </div>
           <div class="szp-res">
             <div class="sec-h"><h2 class="sec-t sm">${personal ? `${res.length} sporten die het best bij je passen` : 'Populaire sporten'}</h2>${personal ? '<span class="muted">gesorteerd op match</span>' : ''}</div>
-            <div class="${pz(personal ? 'sortering op beperking, woonplaats en voorkeur' : '')}">${personal ? tag('sortering op beperking, woonplaats en voorkeur') : ''}
+            <div class="${pz(personal ? 'sortering op type_beperking, woonplaats en sportvoorkeur' : '')}">${personal ? tag('sortering op type_beperking, woonplaats en sportvoorkeur') : ''}
             ${res.map((r, i) => `
               <div class="res ${i === 0 && personal ? 'top' : ''}">
                 <div class="res-t"><h3>${esc(r.sport)}</h3><p>📍 ${esc(r.place)}${r.km ? ` · ${String(r.km).replace('.', ',')} km` : ''}</p>
@@ -272,29 +333,34 @@
       </div></section>` + footer();
   }
 
-  /* ---------- pagina: e-mail ---------- */
   function mail(p) {
     if (!p.optin) {
-      return `<div class="mailbox"><div class="mb-empty"><div class="mb-ic">✉</div><h2>Nog geen e-mail</h2><p>Deze bezoeker heeft nog geen opt-in gegeven. Zodra dat gebeurt, start de welkomstflow in ActiveCampaign, gevoed met wat BlueConic al weet: ${filled(p) ? `<b>${filled(p)} profielvelden</b>` : 'nu nog niets'}.</p><button class="btn or" data-page="home">Terug naar de website</button></div></div>`;
+      return `<div class="mailbox"><div class="mb-empty"><div class="mb-ic">✉</div><h2>Nog geen e-mail</h2><p>Deze bezoeker zit in fase 1 (Bewustwording) en heeft nog geen opt-in gegeven. Zodra dat gebeurt, start welkomstmail 1 in ActiveCampaign, gevoed met wat BlueConic al weet: ${filledCount(p) ? `<b>${filledCount(p)} van 8 fundamentvelden</b>` : 'nu nog niets'}.</p><button class="btn or" data-page="home">Terug naar de website</button></div></div>`;
     }
-    const nk = nba(p), nc = nbaContent(nk, p), st = stories(p).slice(0, 2), wo = workouts(p)[0];
+    const nk = nba(p), nc = nbaContent(nk, p), st = stories(p).slice(0, 2), wo = workouts(p)[0], fz = fase(p);
     const subj = {
       beweegadvies: `${p.first}, zo zet je je eerste stap (gratis beweegadvies)`,
-      proefles: `${p.first}, je proefles rolstoelbasketbal staat klaar`,
-      vervoer: `${p.first}, zo kom je makkelijk bij de training`,
+      proefles: `${p.first}, tijd voor je proefles`,
+      vervoer: `${p.first}, zo kom je makkelijk bij de sport`,
       sportzoeker: `${p.first}, dit kan er in ${city(p)} voor jou`,
       maatje: `${p.first}, samen sporten in ${city(p)}?`,
       buurtsportcoach: `${p.first}, een coach die met je meedenkt`,
+      financien: `${p.first}, sporten hoeft niet veel te kosten`,
+      hulpmiddelen: `${p.first}, probeer een sporthulpmiddel`,
     }[nk] || `${p.first}, nieuwe verhalen voor jou`;
-    const others = [
-      { from: 'Uniek Sporten', s: 'De nieuwste verhalen van november', d: '4 nov' },
-      { from: 'Uniek Sporten Thuis', s: 'Je volgende workout staat klaar', d: '28 okt' },
-    ];
+    const intro = {
+      proefles: 'Je hebt een club gevonden en je sportrolstoel is geregeld. Tijd voor de leukste stap.',
+      beweegadvies: 'Je las al een paar verhalen van herintreders. Wil je weten wat voor jou de beste eerste stap is?',
+      maatje: 'Je gaf aan dat je graag samen sport. Daar helpen we je mee.',
+      vervoer: 'Je gaf aan dat je niet altijd zelf bij een sportlocatie kunt komen. Dat lossen we samen op.',
+      sportzoeker: `Je doet al een tijdje thuisworkouts en las over klimmen bij Parkinson. In ${city(p)} zijn clubs met een groep speciaal voor mensen met Parkinson.`,
+    }[nk] || 'We hebben iets voor je klaargezet.';
+    const others = [{ from: 'Uniek Sporten', s: 'De nieuwste verhalen van november', d: '4 nov' }, { from: 'Uniek Sporten Thuis', s: 'Je volgende workout staat klaar', d: '28 okt' }];
     return `<div class="mailbox">
       <div class="mb-list"><div class="mb-h">Inbox · ${esc(p.name)}</div>
         <div class="mb-item on"><b>Uniek Sporten</b><span>${esc(subj)}</span><small>zojuist</small></div>
         ${others.map(o => `<div class="mb-item"><b>${o.from}</b><span>${o.s}</span><small>${o.d}</small></div>`).join('')}
-        <div class="mb-note${pz('flow in ActiveCampaign volgt next_best_action')}">${tag('flow in ActiveCampaign volgt next_best_action')}<b>Hoe deze mail ontstaat</b><br>BlueConic stuurt de next best action (<code>${nk}</code>) naar ActiveCampaign. De mail toont dezelfde ene stap als de website, plus verhalen die bij het profiel passen.</div>
+        <div class="mb-note${pz('flow in ActiveCampaign')}">${tag('flow in ActiveCampaign')}<b>Hoe deze mail ontstaat</b><br>BlueConic synct <code>next_best_action = actie_${nk}</code> en <code>klantreis_fase = ${fz.n}</code> naar ActiveCampaign. Flow: <b>${esc(nc.mail)}</b>. Eén stap per mail, dezelfde als op de website.</div>
       </div>
       <div class="mb-read">
         <div class="mb-meta"><b>${esc(subj)}</b><small>Van: Uniek Sporten &lt;nieuws@unieksporten.nl&gt; · Aan: ${esc(p.first.toLowerCase())}@voorbeeld.nl</small></div>
@@ -302,11 +368,11 @@
           <div class="em-head"><img src="${IMG.logo}" alt="Uniek Sporten"></div>
           <div class="em-body">
             <p class="em-hi">Hoi ${esc(p.first)},</p>
-            <p>${nk === 'proefles' ? 'Je hebt een club gevonden en je sportrolstoel is geregeld. Tijd voor de leukste stap.' : nk === 'beweegadvies' ? 'Je hebt al een paar verhalen van herintreders gelezen. Mooi! Wil je weten wat voor jou de beste eerste stap is?' : nk === 'maatje' ? 'Je gaf aan dat je graag samen sport. Daar kunnen we je mee helpen.' : nk === 'vervoer' ? 'Je gaf aan dat je niet altijd zelf naar de training kunt. Dat lossen we samen op.' : nk === 'sportzoeker' ? `Je las over klimmen bij Parkinson. In ${city(p)} zijn clubs met een groep speciaal voor mensen met Parkinson.` : 'We hebben iets voor je klaargezet.'}</p>
-            <div class="em-nba${pz('next_best_action = ' + nk)}">${tag('next_best_action = ' + nk)}<span class="em-ic">${nc.icon}</span><div><b>${esc(nc.title)}</b><p>${esc(nc.text)}</p><span class="btn or sm">${esc(nc.cta)}</span></div></div>
+            <p>${esc(intro)}</p>
+            <div class="em-nba${pz('next_best_action = actie_' + nk)}">${tag('next_best_action = actie_' + nk)}<span class="em-ic">${nc.icon}</span><div><b>${esc(nc.title)}</b><p>${esc(nc.text)}</p><span class="btn or sm">${esc(nc.cta)}</span></div></div>
             <h3 class="em-h">Verhalen voor jou</h3>
-            <div class="em-stories${pz('type_beperking = ' + (beperking(p) || ''))}">${tag('type_beperking = ' + (beperking(p) || ''))}${st.map(s => `<a href="${s.url}" target="_blank" rel="noopener"><img src="${s.img}" alt=""><span>${esc(s.title)}</span></a>`).join('')}</div>
-            ${active(p.acties.thuisworkouts) ? `<div class="em-wo"><img src="${wo.img}" alt=""><div><small>Uniek Sporten Thuis · ${wo.min} min</small><b>${esc(wo.title)}</b></div></div>` : ''}
+            <div class="em-stories${pz('type_beperking = ' + (mainB(p) || ''))}">${tag('type_beperking = ' + (mainB(p) || ''))}${st.map(s => `<a href="${s.url}" target="_blank" rel="noopener"><img src="${s.img}" alt=""><span>${esc(s.title)}</span></a>`).join('')}</div>
+            ${['relevant_gevraagd', 'relevant_signaal', 'gestart', 'afgerond'].includes(status(p, 'thuisworkouts')) ? `<div class="em-wo"><img src="${wo.img}" alt=""><div><small>Uniek Sporten Thuis · ${wo.min} min</small><b>${esc(wo.title)}</b></div></div>` : ''}
             <p class="em-foot">Je ontvangt deze mail omdat je je hebt aangemeld bij Uniek Sporten. <u>Voorkeuren aanpassen</u> · <u>Afmelden</u></p>
           </div>
         </div>
@@ -314,67 +380,105 @@
     </div>`;
   }
 
-  /* ---------- profielpaneel ---------- */
+  /* ================= Profielpaneel ================= */
   function renderPanel() {
-    const p = state.p, fz = fase(p), nk = nba(p);
-    const srcLabel = { gevraagd: 'gevraagd', gedrag: 'gedrag', berekend: 'berekend' };
+    const p = state.p, fz = fase(p), nk = nba(p), nq = nextQuestion(p);
+    const pill = v => v ? `<span class="src ${v.src}">${v.src === 'gevraagd' ? 'actief' : 'passief'}${v.when ? ' · ' + esc(v.when) : ''}</span>` : '';
+    const row = (x, v) => `<tr class="${state.flash.has(x.key) ? 'flash' : ''}"><td>${x.label}${x.art9 ? ' <span class="lock" title="Art. 9 AVG: alleen met aparte, uitdrukkelijke toestemming">🔒</span>' : ''}${x.fase === 2 ? ' <span class="uf" title="Uitrolfase 2">F2</span>' : ''}<code>${x.key}</code></td><td>${v ? `<b>${esc(show(v.v))}</b>${pill(v)}` : '<span class="empty">leeg</span>'}</td></tr>`;
     $('#panel').innerHTML = `
       <div class="pp-h"><span class="av big av-${p.key}">${p.initials}</span><div><b>${esc(p.name)}</b><small>${esc(p.subtitle)}</small></div><button class="x" data-act="panel" aria-label="Sluit paneel">×</button></div>
-      <div class="pp-src">BlueConic-profiel · ${p.known ? 'bekend (e-mail + opt-in)' : 'anoniem (cookie)'}</div>
-      <div class="pp-sec"><h4>Klantreisfase</h4>
-        <div class="fase">${FASES.map((x, i) => `<div class="fs ${i + 1 < fz.n ? 'done' : ''} ${i + 1 === fz.n ? 'now' : ''}" title="${x}"><span></span><small>${x}</small></div>`).join('')}</div>
-        <p class="pp-why">Fase ${fz.n} · ${esc(FASES[fz.n - 1])}: ${esc(fz.why)}</p></div>
-      <div class="pp-sec nba-box ${state.flash.has('nba') ? 'flash' : ''}"><h4>Next best action</h4><b>${esc(nbaContent(nk, p).title)}</b><small>berekend uit de actiestatussen (eerste in prioriteit met status relevant of gestart)</small></div>
-      <div class="pp-sec"><h4>Fundament <span class="cnt">${filled(p)}/8</span></h4>
-        <table class="pf">${FIELDS.map(x => { const v = p.profile[x.key]; return `<tr class="${state.flash.has(x.key) ? 'flash' : ''}"><td>${x.label}${x.sensitive ? ' <span class="lock" title="Bijzonder persoonsgegeven: aparte toestemming (art. 9 AVG)">🔒</span>' : ''}</td><td>${v ? `<b>${esc(v.v)}</b><span class="src ${v.src}">${srcLabel[v.src]}${v.when ? ' · ' + esc(v.when) : ''}</span>` : '<span class="empty">onbekend</span>'}</td></tr>`; }).join('')}</table></div>
-      <div class="pp-sec"><h4>Actiestatussen</h4>
-        <div class="acts">${ACTIONS.map(a => `<div class="act ${a.key === nk ? 'nba' : ''} ${state.flash.has('a_' + a.key) ? 'flash' : ''}"><span>${a.label}</span><span class="st ${p.acties[a.key]}">${STATUS_LABEL[p.acties[a.key]]}</span></div>`).join('')}</div></div>
+      <div class="pp-src">BlueConic-profiel · ${p.known ? 'bekend (e-mail + opt-in), sync naar ActiveCampaign' : 'anoniem (cookie)'}</div>
+
+      <div class="pp-sec nba-box ${state.flash.has('nba') ? 'flash' : ''}"><h4>D. Sturing · next_best_action</h4><b>${esc(nbaContent(nk, p).title)}</b><small><code>actie_${nk}</code> · eerste actie in Actiemodel-volgorde met status Relevant of Gestart</small></div>
+
+      <div class="pp-sec ${state.flash.has('fase') ? 'flash' : ''}"><h4>B. Klantreis · klantreis_fase</h4>
+        <div class="fase">${FASES.map(x => `<div class="fs ${x.n < fz.n ? 'done' : ''} ${x.n === fz.n ? 'now' : ''}" title="${x.naam}"><span></span><small>${x.n}. ${x.naam}</small></div>`).join('')}</div>
+        <p class="pp-why"><b>Fase ${fz.n} · ${esc(FASES[fz.n - 1].naam)}</b>: ${esc(fz.why)}.<br><span class="muted">Focus: ${esc(FASES[fz.n - 1].focus)}</span></p>
+        <table class="pf">${STURING.filter(x => x.blok === 'B').map(x => row(x, p.sturing[x.key])).join('')}</table></div>
+
+      <div class="pp-sec"><h4>A. Fundament <span class="cnt">${filledCount(p)}/8</span></h4>
+        <table class="pf">${FIELDS.map(x => row(x, p.fields[x.key])).join('')}</table></div>
+
+      <div class="pp-sec"><h4>C. Acties <span class="cnt" title="Matrix Beperking x Actie">R / V / N</span></h4>
+        <div class="acts">${ACTIONS.map(a => { const s = status(p, a.key), m = matrix(p, a.key); return `<div class="act ${a.key === nk ? 'nba' : ''} ${state.flash.has('a_' + a.key) ? 'flash' : ''}"><span>${a.label}${a.art9 ? ' 🔒' : ''}<code>actie_${a.key}</code></span><span class="act-r">${m ? `<span class="mx mx-${m}" title="${m === 'R' ? 'Altijd relevant, geen vraag' : m === 'V' ? 'Vraag stellen' : 'Vraag niet stellen'}">${m}</span>` : ''}<span class="st ${s}">${STATUS_LABEL[s]}</span></span></div>`; }).join('')}</div>
+        <p class="pp-why muted">R/V/N uit de matrix Beperking x Actie${beperkingen(p).length > 1 ? ' (hoogste waarde over alle beperkingen)' : ''}.</p></div>
+
+      <div class="pp-sec"><h4>D. Sturing</h4><table class="pf">${STURING.filter(x => x.blok === 'D').map(x => row(x, p.sturing[x.key])).join('')}</table></div>
+
+      <div class="pp-sec"><h4>Volgende vraag in de wachtrij</h4>${nq ? `<p class="q-next">“${esc(nq.q)}”<br><small class="muted">${nq.kind === 'field' ? 'fundament: ' + nq.key : 'V-vraag voor actie_' + nq.key}</small></p>` : '<p class="muted">Geen open vragen.</p>'}</div>
+
       <div class="pp-sec"><h4>Recent gedrag</h4><ul class="log">${p.log.slice().reverse().map(l => `<li>${esc(l)}</li>`).join('')}</ul></div>`;
     document.body.classList.toggle('panel-open', state.panel);
   }
 
-  /* ---------- verrijkingsvraag (BlueConic-dialoog) ---------- */
+  /* ================= Verrijkingsvraag (BlueConic-dialoog) ================= */
   function renderToaster() {
-    const p = state.p, qk = p.questions[0];
-    const show = qk && state.page === 'home' && !state.toastClosed;
-    if (!show) { $('#toaster').innerHTML = ''; $('#toaster').className = ''; return; }
-    const q = QUESTIONS[qk];
-    $('#toaster').className = 'on';
+    const p = state.p;
+    if (state.page !== 'home' || state.toastClosed) { $('#toaster').innerHTML = ''; return; }
+    const lbl = state.labels ? '<span class="pz-tag in"><b>BlueConic-dialoog</b> max. 1 vraag per bezoek</span>' : '';
+    if (state.askedThisVisit) {
+      const nq = nextQuestion(p);
+      $('#toaster').innerHTML = `<div class="toast done">${lbl}<button class="x" data-act="closetoast" aria-label="Sluiten">×</button>
+        <h3>Dank je wel!</h3><p>Je antwoord is opgeslagen in je profiel. ${nq ? 'De volgende vraag krijg je bij je volgende bezoek (spelregel 3).' : 'Er staan geen vragen meer open.'}</p>
+        ${nq ? '<button class="btn nv sm" data-act="nextvisit">Simuleer volgend bezoek →</button>' : ''}</div>`;
+      return;
+    }
+    const q = nextQuestion(p);
+    if (!q) { $('#toaster').innerHTML = ''; return; }
+    const opts = q.multi
+      ? `<div class="opts multi">${q.options.map(([l, v]) => `<label class="chk ${state.pick.includes(v) ? 'on' : ''}"><input type="checkbox" data-pick="${esc(v)}" ${state.pick.includes(v) ? 'checked' : ''}> ${esc(l)}</label>`).join('')}</div>
+         <button class="btn or sm" data-act="savemulti" ${state.pick.length && state.consent ? '' : 'disabled'}>Opslaan</button>`
+      : `<div class="opts">${q.options.map(([l], i) => `<button class="opt" data-ans="${i}" ${q.consent && !state.consent ? 'disabled' : ''}>${esc(l)}</button>`).join('')}</div>`;
     $('#toaster').innerHTML = `
-      <div class="toast">
-        ${state.labels ? '<span class="pz-tag in"><b>BlueConic-dialoog</b> verrijkingsvraag · max. 1 per bezoek</span>' : ''}
-        <button class="x" data-act="closetoast" aria-label="Sluiten">×</button>
+      <div class="toast">${lbl}<button class="x" data-act="closetoast" aria-label="Sluiten">×</button>
         <img src="${IMG.logo}" alt="" class="toast-logo">
         <h3>${esc(q.q)}</h3><p>${esc(q.sub)}</p>
-        ${q.consent ? `<label class="consent"><input type="checkbox" id="consent"> Ik geef toestemming dat Uniek Sporten deze gezondheidsinformatie gebruikt om mij passend aanbod te tonen.</label>` : ''}
-        <div class="opts">${q.options.map((o, i) => `<button class="opt" data-ans="${i}" ${q.consent ? 'disabled' : ''}>${esc(o.label)}</button>`).join('')}</div>
+        ${q.consent ? `<label class="consent"><input type="checkbox" id="consent" ${state.consent ? 'checked' : ''}> Ik geef Uniek Sporten uitdrukkelijk toestemming om deze gezondheidsinformatie te gebruiken om mij passend aanbod te tonen. (Los van je profieltoestemming, art. 9 AVG.)</label>` : ''}
+        ${opts}
       </div>`;
   }
 
-  function answer(i) {
-    const p = state.p, qk = p.questions[0], q = QUESTIONS[qk], o = q.options[i];
-    const before = nba(p);
+  function commit(changes) {
+    const p = state.p, before = { nba: nba(p), fase: fase(p).n, st: Object.fromEntries(ACTIONS.map(a => [a.key, status(p, a.key)])) };
     state.flash = new Set();
-    Object.entries(o.set || {}).forEach(([k, v]) => { p.profile[k] = { v, src: 'gevraagd', when: 'zojuist' }; state.flash.add(k); });
-    Object.entries({ ...(q.acties || {}), ...(o.acties || {}) }).forEach(([k, v]) => { p.acties[k] = v; state.flash.add('a_' + k); });
-    p.log.push(`Zojuist: "${q.q}" → ${o.label}`);
-    p.questions.shift();
-    if (nba(p) !== before) state.flash.add('nba');
+    changes(p);
+    ACTIONS.forEach(a => { if (status(p, a.key) !== before.st[a.key]) state.flash.add('a_' + a.key); });
+    if (nba(p) !== before.nba) state.flash.add('nba');
+    if (fase(p).n !== before.fase) state.flash.add('fase');
+    p.sturing.laatste_interactie = { v: '2026-11-09', src: 'gedrag', when: 'zojuist' };
+    state.askedThisVisit = true; state.pick = []; state.consent = false;
     if (!state.panel && window.innerWidth >= 900) state.panel = true;
     render();
-    setTimeout(() => { state.flash = new Set(); renderPanel(); }, 2600);
+    setTimeout(() => { state.flash = new Set(); renderPanel(); }, 2800);
   }
 
-  /* ---------- rondleiding ---------- */
+  function answer(i) {
+    const q = nextQuestion(state.p), [label, val] = q.options[i];
+    commit(p => {
+      if (q.kind === 'field') { p.fields[q.key] = { v: val, src: 'gevraagd', when: 'zojuist' }; state.flash.add(q.key); }
+      else p.progress[q.key] = val;
+      p.log.push(`Zojuist: “${q.q}” → ${label}`);
+    });
+  }
+
+  function saveMulti() {
+    const q = nextQuestion(state.p), vals = [...state.pick];
+    commit(p => {
+      p.fields[q.key] = { v: vals, src: 'gevraagd', when: 'zojuist' }; state.flash.add(q.key);
+      p.log.push(`Zojuist: type_beperking → ${vals.join(', ')} (met aparte toestemming)`);
+    });
+  }
+
+  /* ================= Rondleiding ================= */
   const TOUR = [
-    { persona: 'anon', page: 'home', t: 'Zo ziet de site er vandaag voor iedereen uit', d: 'Een nieuwe bezoeker. In het profiel rechts staat nog niets: we weten niet wie het is of wat hij zoekt.' },
-    { persona: 'anon', page: 'home', t: 'Eén vraag tegelijk vult het profiel', d: 'Beantwoord de vraag linksonder (een BlueConic-dialoog). Kijk hoe het profiel zich vult en de site meteen meebeweegt.' },
-    { persona: 'mark', page: 'home', t: 'Mark, 52: herintreder na een herseninfarct', d: 'Mark krijgt verhalen van andere herintreders, rustige thuisworkouts en één volgende stap: gratis beweegadvies.' },
-    { persona: 'kim', page: 'home', t: 'Kim, 27: wil rolstoelbasketballen', d: 'Club gevonden en sportrolstoel geregeld: haar stap is de proefles. Antwoord "Soms" op de vervoersvraag en zie de volgende stap veranderen.' },
-    { persona: 'kim', page: 'sportzoeker', t: 'De Sportzoeker staat al klaar', d: 'Woonplaats, sport en beperking zijn ingevuld vanuit het profiel. De resultaten zijn gesorteerd op match.' },
-    { persona: 'henk', page: 'home', t: 'Henk, 63: Parkinson, wil samen sporten', d: 'Lokaal nieuws uit Eindhoven en het artikel over klimmen bij Parkinson. Zijn vraag: wil je samen sporten?' },
-    { persona: 'henk', page: 'mail', t: 'Dezelfde stap in de mail', d: 'ActiveCampaign krijgt de next best action uit BlueConic. Site en mail vertellen hetzelfde verhaal.' },
-    { persona: 'anon', page: 'home', t: 'Eén profiel, overal dezelfde volgende stap', d: 'Dit kan met BlueConic en ActiveCampaign die we al hebben. De vraag voor vandaag: hoe ver willen we in 2027 komen?' },
+    { persona: 'anon', page: 'home', t: 'Zo ziet de site er vandaag voor iedereen uit', d: 'Een nieuwe bezoeker in fase 1, Bewustwording. Het profiel rechts is leeg: we weten niet wie het is of wat hij zoekt.' },
+    { persona: 'anon', page: 'home', t: 'Eén vraag per bezoek vult het fundament', d: '“Voor wie kijk je vandaag?” Beantwoord de vraag en simuleer een paar bezoeken. Bij 4 velden schuift de bezoeker naar fase 2 en krijgt hij een eigen volgende stap.' },
+    { persona: 'mark', page: 'home', t: 'Mark, 52: NAH, herintreder, fase 2 Interesse', d: 'Herintreder en inactief met sportwens: beweegadvies is relevant en staat bovenaan het Actiemodel. Zijn volgende vraag komt uit de matrix: zou hij samen willen sporten?' },
+    { persona: 'kim', page: 'home', t: 'Kim, 27: rolstoel, fase 3 Oriëntatie', d: 'Sportzoeker en hulpmiddel zijn afgerond, dus de proefles is relevant. Antwoord “Soms” op de vervoersvraag: vervoer wordt een drempel en schuift voor de proefles.' },
+    { persona: 'kim', page: 'sportzoeker', t: 'De Sportzoeker staat al klaar', d: 'Woonplaats, sport en beperking komen uit het profiel. De resultaten zijn gesorteerd op match.' },
+    { persona: 'henk', page: 'home', t: 'Henk, 63: Parkinson, fase 5 Actief deelnemen', d: 'Actief zonder club, met 4 thuisworkouts gedaan. Zijn volgende stap is een club. Kiest hij voor samen sporten, dan wordt een sportmaatje de volgende stap.' },
+    { persona: 'henk', page: 'mail', t: 'Dezelfde stap in de mail', d: 'BlueConic synct de next best action en de klantreisfase naar ActiveCampaign. Site en mail vertellen hetzelfde verhaal, één stap tegelijk.' },
+    { persona: 'anon', page: 'home', t: 'Eén profiel, overal dezelfde volgende stap', d: 'Velden, beperkingen, fases en regels komen uit ons datamodel en draaien op BlueConic en ActiveCampaign. De vraag voor vandaag: hoe ver willen we in 2027 komen?' },
   ];
 
   function renderTour() {
@@ -388,15 +492,15 @@
     if (i < 0 || i >= TOUR.length) { state.tour = null; render(); return; }
     const s = TOUR[i];
     state.tour = i;
-    if (s.persona !== state.pkey || (i === 0)) setPersona(s.persona, false);
+    if (s.persona !== state.pkey || i === 0) setPersona(s.persona, false);
     state.page = s.page;
-    if (i === 1 || i === 3 || i === 5) state.panel = window.innerWidth >= 900 ? true : state.panel;
+    if (window.innerWidth >= 900 && [1, 2, 3, 5].includes(i)) state.panel = true;
     render(); window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
-  /* ---------- render & events ---------- */
+  /* ================= Render & events ================= */
   function setPersona(k, doRender = true) {
-    state.pkey = k; state.p = clone(PERSONAS[k]); state.flash = new Set(); state.toastClosed = false;
+    Object.assign(state, { pkey: k, p: clone(PERSONAS[k]), flash: new Set(), toastClosed: false, askedThisVisit: false, pick: [], consent: false });
     if (doRender) { render(); window.scrollTo({ top: 0 }); }
   }
 
@@ -405,7 +509,6 @@
     const p = state.p;
     $('#app').innerHTML = `<div class="site">${state.page === 'home' ? home(p) : state.page === 'sportzoeker' ? sportzoeker(p) : mail(p)}</div>`;
     renderPanel(); renderToaster(); renderTour();
-    document.body.classList.toggle('labels', state.labels);
   }
 
   document.addEventListener('click', e => {
@@ -419,13 +522,20 @@
     if (a === 'panel') { state.panel = !state.panel; render(); }
     if (a === 'labels') { state.labels = !state.labels; render(); }
     if (a === 'closetoast') { state.toastClosed = true; renderToaster(); }
+    if (a === 'nextvisit') { state.askedThisVisit = false; state.p.log.push('Nieuw bezoek'); render(); }
+    if (a === 'savemulti') saveMulti();
     if (a === 'tour') goTour(state.tour === null ? 0 : state.tour);
     if (a === 'tnext') goTour(state.tour + 1);
     if (a === 'tprev') goTour(state.tour - 1);
     if (a === 'tclose') { state.tour = null; renderTour(); }
   });
   document.addEventListener('change', e => {
-    if (e.target.id === 'consent') document.querySelectorAll('#toaster .opt').forEach(b => b.disabled = !e.target.checked);
+    if (e.target.id === 'consent') { state.consent = e.target.checked; renderToaster(); }
+    if (e.target.dataset.pick) {
+      const v = e.target.dataset.pick;
+      state.pick = e.target.checked ? [...state.pick, v] : state.pick.filter(x => x !== v);
+      renderToaster();
+    }
   });
   document.addEventListener('keydown', e => {
     if (state.tour === null) return;
