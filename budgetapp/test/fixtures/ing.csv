@@ -1,0 +1,4 @@
+"Datum";"Naam / Omschrijving";"Rekening";"Tegenrekening";"Code";"Af Bij";"Bedrag (EUR)";"Mutatiesoort";"Mededelingen";"Saldo na mutatie";"Tag"
+"20261115";"Albert Heijn 1427 AMSTERDAM";"NL11INGB0001234567";"";"BA";"Af";"42,17";"Betaalautomaat";"Pasvolgnr: 001 15-11-2026 18:02 Transactie: 12AB";"1.204,33";""
+"20261114";"Netflix International B.V.";"NL11INGB0001234567";"NL22ABNA0123456789";"IC";"Af";"13,99";"Incasso";"Naam: Netflix Omschrijving: abonnement";"1.246,50";""
+"20261025";"Werkgever BV";"NL11INGB0001234567";"NL33RABO0123456789";"OV";"Bij";"2.940,00";"Overschrijving";"Salaris oktober";"1.260,49";""
