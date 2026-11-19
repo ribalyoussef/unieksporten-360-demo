@@ -6,10 +6,8 @@
   // Maak in Stripe twee Payment Links aan en zet de success-URL op
   // https://<jouw-domein>/?premium=ok  — plak de links hieronder.
   const CONFIG = {
-    paymentLinkMonthly: '',
-    paymentLinkYearly: '',
-    priceMonthly: '€3,99',
-    priceYearly: '€29',
+    paymentLink: '',       // Stripe Payment Link, eenmalige betaling
+    price: '€9,95',
   };
 
   const { CATEGORIES, CAT, categorize, normalizeName, summarize, findRecurring, forecast, buildTips, monthKey, eur } = window.PotjeCore;
@@ -21,6 +19,17 @@
   ];
   const cancelUrl = r => (CANCEL_LINKS.find(([re]) => re.test(r.key)) || [])[1] || 'https://www.google.com/search?q=' + encodeURIComponent(r.name.replace(/\b(b\.?v\.?|ab|se|international|nederland)\b/gi, '').trim() + ' abonnement opzeggen');
   const CANCELLABLE = ['abonnementen', 'vrijetijd', 'shopping', 'overig', 'energie'];
+  const R = window.PotjeRegelingen;
+
+  const ICONS = { inkomen: '💶', wonen: '🏠', energie: '⚡', boodschappen: '🛒', uiteten: '🍕', vervoer: '🚆', abonnementen: '📺', zorg: '🩺', shopping: '🛍️', vrijetijd: '🎾', contant: '💵', overig: '📦', sparen: '🐷' };
+  const catIcon = c => `<span class="cat-ico cat-${c}" aria-hidden="true">${ICONS[c] || '📦'}</span>`;
+  const AVATAR_HUES = [158, 210, 25, 280, 340, 45, 190, 0];
+  const avatar = name => {
+    const clean = String(name).replace(/[^A-Za-zÀ-ÿ ]/g, ' ').trim().split(/\s+/);
+    const ini = ((clean[0] || '?')[0] + (clean[1] ? clean[1][0] : (clean[0] || '').slice(1, 2))).toUpperCase();
+    let h = 0; for (const ch of String(name)) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+    return `<span class="avatar" style="--h:${AVATAR_HUES[h % AVATAR_HUES.length]}" aria-hidden="true">${esc(ini)}</span>`;
+  };
   const $ = (sel, root = document) => root.querySelector(sel);
   const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const eur2 = n => new Intl.NumberFormat('nl-NL', { style: 'currency', currency: 'EUR' }).format(n);
@@ -38,6 +47,8 @@
     budgets: store.get('budgets', {}),
     premium: store.get('premium', false),
     isSample: store.get('sample', false),
+    answers: store.get('answers', null), // antwoorden van de geld-check
+    editing: false,
     done: store.get('done', {}), // { id: { label, yearly, at } } — uitgevoerde tips en opgezegde abonnementen
     view: 'overzicht',
     month: null,
@@ -49,7 +60,7 @@
   if (params.get('premium') === 'ok') {
     state.premium = true; store.set('premium', true);
     history.replaceState(null, '', location.pathname);
-    setTimeout(() => toast('Welkom bij Potje Premium! Alle tips staan nu open.'), 300);
+    setTimeout(() => toast('Welkom bij Potje Plus! Alles staat nu open.'), 300);
   }
 
   const cancelled = () => new Set(Object.keys(state.done).filter(k => k.startsWith('cancel:')).map(k => k.slice(7)));
@@ -125,6 +136,7 @@
   function loadSample() {
     state.raw = window.PotjeSample.makeSampleTransactions();
     state.isSample = true;
+    state.answers = null; store.set('answers', null);
     store.set('sample', true); store.set('txs', state.raw);
     state.month = null; recompute(); render();
   }
@@ -156,9 +168,10 @@
     <header class="topbar"><div class="wrap">${logo}</div></header>
     <main class="wrap welcome">
       <section class="hero">
-        <p class="eyebrow">Gratis · geen account nodig</p>
-        <h1>Weet in 10 seconden waar je geld blijft.</h1>
-        <p class="lede">Upload de export van je bank en Potje sorteert al je uitgaven automatisch. Je ziet wat je aan abonnementen kwijt bent, waar het lekt en hoeveel je per jaar kunt besparen.</p>
+        <p class="eyebrow">Gratis check · geen account · geen bankkoppeling</p>
+        <h1>Haal het geld op waar je recht op hebt.</h1>
+        <p class="lede">Upload de export van je bank. Potje rekent uit of je toeslag laat liggen, hoeveel je per dag kunt uitgeven tot je salaris en waar je kunt besparen.</p>
+        <ul class="proof"><li>💶 Zorg- en huurtoeslag-check</li><li>📅 Vrij te besteden per dag</li><li>✂️ Abonnementen opzeggen</li></ul>
         <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Kies je bankexport">
           <strong>Sleep je bankexport hierheen</strong>
           <span>of <u>kies een bestand</u> · ING, Rabobank, ABN AMRO, bunq of andere CSV</span>
@@ -178,26 +191,35 @@
   }
 
   // ── Hoofdscherm ───────────────────────────────────────────────────────────
-  const NAV = [['overzicht', 'Overzicht'], ['tips', 'Bespaartips'], ['transacties', 'Transacties'], ['budgetten', 'Budgetten']];
+  const NAV = [
+    ['overzicht', 'Overzicht', '<path d="M3 11.5 12 4l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>'],
+    ['geld', 'Geld halen', '<circle cx="12" cy="12" r="8.5"/><path d="M14.8 9.2a3.2 3.2 0 1 0 0 5.6M8 11h5M8 13.2h5"/>'],
+    ['tips', 'Tips', '<path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9c.6.4 1 1.1 1 1.9V16h5v-.2c0-.8.4-1.5 1-1.9A6 6 0 0 0 12 3z"/>'],
+    ['transacties', 'Transacties', '<path d="M4 7h13l-3-3M20 17H7l3 3"/>'],
+    ['budgetten', 'Budgetten', '<rect x="3.5" y="5" width="17" height="14" rx="2.5"/><path d="M3.5 9.5h17M7.5 14.5h4"/>'],
+  ];
+  const navIcon = d => `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 
   function renderShell(content) {
     const months = allMonths();
+    const navBtns = cls => NAV.map(([id, label, ico]) => `<button data-view="${id}" class="${cls} ${state.view === id ? 'active' : ''}" ${state.view === id ? 'aria-current="page"' : ''}>${navIcon(ico)}<span>${label}</span></button>`).join('');
     return `
     <header class="topbar"><div class="wrap">
       ${logo}
       <label class="month-select"><span class="sr">Maand</span>
         <select data-act="month">${months.slice().reverse().map(m => `<option value="${m}" ${m === state.month ? 'selected' : ''}>${monthLabel(m)}${isPartial(m) ? ' (loopt nog)' : ''}</option>`).join('')}</select>
       </label>
-      <button class="btn small" data-act="upload">+ Importeer</button>
+      <button class="btn small import-btn" data-act="upload" aria-label="Importeer bankexport"><span aria-hidden="true">＋</span><span class="import-label">Importeer</span></button>
     </div>
-    <nav class="tabs wrap" aria-label="Onderdelen">${NAV.map(([id, label]) => `<button data-view="${id}" class="${state.view === id ? 'active' : ''}" ${state.view === id ? 'aria-current="page"' : ''}>${label}</button>`).join('')}</nav>
+    <nav class="tabs wrap" aria-label="Onderdelen">${navBtns('tab')}</nav>
     </header>
-    ${state.isSample ? `<div class="sample-bar wrap">Je bekijkt voorbeelddata. <button class="link" data-act="upload">Importeer je eigen bankexport</button></div>` : ''}
+    ${state.isSample ? `<div class="sample-bar wrap"><span>Je bekijkt voorbeelddata.</span> <button class="link" data-act="upload">Importeer je eigen bankexport</button></div>` : ''}
     <main class="wrap">${content}</main>
     <footer class="wrap foot">
-      <span>Je gegevens staan alleen in deze browser.</span>
+      <span>🔒 Je gegevens staan alleen in deze browser.</span>
       <button class="link" data-act="reset">Alles wissen</button>
-    </footer>`;
+    </footer>
+    <nav class="bottombar" aria-label="Onderdelen">${navBtns('bb')}</nav>`;
   }
 
   function monthData(m) { return txs.filter(t => monthKey(t.date) === m); }
@@ -227,6 +249,7 @@
 
     return `
     ${partial ? `<p class="partial-note">${monthLabel(state.month)} loopt nog: je ziet alles t/m ${new Date(lastDateIn(state.month) + 'T12:00').toLocaleDateString('nl-NL', { day: 'numeric', month: 'long' })}. Vergelijkingen en tips maken we op volledige maanden. <button class="link" data-month-go="${allMonths().slice(-2)[0]}">Bekijk vorige maand</button></p>` : ''}
+    ${renderMoneyHero()}
     <div class="now-row">
       ${renderForecast()}
       ${renderSavedCounter()}
@@ -250,7 +273,7 @@
       </div>
       ${top.shortfall ? `<div class="tip-save"><strong class="neg">−${eur(top.shortfall)}</strong><span>tekort</span></div>` : `<div class="tip-save"><span>Tot</span><strong>${eur(top.yearly)}</strong><span>per jaar</span></div>`}
     </section>
-    ${tips.length > 1 ? `<button class="more-tips" data-view="tips">Nog ${tips.length - 1} ${tips.length - 1 === 1 ? 'tip' : 'tips'} gevonden${state.premium ? '' : ' · Premium'} →</button>` : ''}` : ''}
+    ${tips.length > 1 ? `<button class="more-tips" data-view="tips">Nog ${tips.length - 1} ${tips.length - 1 === 1 ? 'tip' : 'tips'} gevonden${state.premium ? '' : ' · Potje Plus'} →</button>` : ''}` : ''}
 
     <div class="grid2">
       <section class="card">
@@ -258,7 +281,7 @@
         ${cats.length ? `<ul class="hbars" aria-label="Uitgaven per categorie">
           ${cats.map(([c, v]) => `
           <li><button class="hbar" data-cat="${c}" data-tip="${esc(CAT[c].label)}|${eur2(v)}|${Math.round((v / cur.spend) * 100)}% van je uitgaven">
-            <span class="hbar-label">${esc(CAT[c].label)}</span>
+            <span class="hbar-label">${catIcon(c)}<span>${esc(CAT[c].label)}</span></span>
             <span class="hbar-track"><span class="hbar-fill" style="width:${Math.max(1.5, (v / maxCat) * 100)}%"></span></span>
             <span class="hbar-value">${eur(v)}</span>
           </button></li>`).join('')}
@@ -308,11 +331,11 @@
   function renderSavedCounter() {
     const total = savedTotal(), items = Object.values(state.done);
     return `<section class="card counter">
-      <p class="eyebrow">Bespaard dankzij Potje</p>
+      <p class="eyebrow">Opgeleverd dankzij Potje</p>
       ${items.length
         ? `<p class="big">${eur(total)} <span>per jaar</span></p>
            <p class="muted small">${items.length} ${items.length === 1 ? 'actie' : 'acties'}: ${items.slice(-3).map(d => esc(d.label)).join(', ')}${items.length > 3 ? '…' : ''}</p>
-           ${!state.premium && total > 29 ? `<p class="small good-text">Dat is ${Math.floor(total / 29)}× wat Premium per jaar kost.</p>` : ''}`
+           ${total > 10 ? `<p class="small good-text">Dat is ${Math.floor(total / 9.95)}× wat Potje Plus kost.</p>` : ''}`
         : `<p class="big zero">€ 0</p><p class="muted small">Vink een bespaartip af of zeg een abonnement op. Wij tellen bij wat het je per jaar oplevert.</p>`}
     </section>`;
   }
@@ -321,7 +344,7 @@
     const canCancel = CANCELLABLE.includes(r.category);
     return `<li class="${isCancelled ? 'cancelled' : ''}">
       <div class="rec-top">
-        <span>${esc(r.name)}<small>${esc(CAT[r.category].label)}</small></span>
+        ${avatar(r.name)}<span class="rec-name">${esc(r.name)}<small>${esc(CAT[r.category].label)}</small></span>
         <span class="amt">${eur2(r.monthly)}<small>${eur(r.monthly * 12)}/jaar</small></span>
       </div>
       ${r.increase && !isCancelled ? `<span class="status warning"><i aria-hidden="true">!</i>${eur2(r.increase)} per maand duurder (was ${eur2(r.previous)})</span>` : ''}
@@ -335,6 +358,108 @@
     if (t.shortfall) return '';
     const on = !!state.done['tip:' + t.id];
     return `<button class="chip ${on ? 'on' : ''}" aria-pressed="${on}" data-act="done" data-id="${esc(t.id)}" data-label="${esc(t.action)}" data-yearly="${t.yearly}">${on ? '✓ Gedaan, staat op je bespaarteller' : 'Gedaan'}</button>`;
+  }
+
+  function moneyResults() {
+    if (!state.answers) return null;
+    const bank = R.detectFromBank(txs);
+    const results = R.check(state.answers, bank);
+    const open = results.filter(r => r.ok && !r.already && !state.done['regeling:' + r.id]);
+    return { results, open, total: open.reduce((a, r) => a + r.yearly, 0) };
+  }
+
+  function renderMoneyHero() {
+    const m = moneyResults();
+    if (!m) return `<section class="hero-card">
+        <div><p class="hero-eyebrow">Geld dat je laat liggen</p>
+        <h2>Heb je recht op toeslag en vraag je die niet aan?</h2>
+        <p>Veel Nederlanders laten zorgtoeslag, huurtoeslag of kindgebonden budget liggen. Check het in een minuut.</p></div>
+        <button class="btn light" data-act="go-check">Doe de check →</button>
+      </section>`;
+    if (!m.open.length) return `<section class="hero-card calm"><div><p class="hero-eyebrow">Geld dat je laat liggen</p><h2>Je haalt alles al op 👏</h2><p>Op basis van je antwoorden laat je geen toeslag liggen.</p></div><button class="btn light" data-act="go-check">Bekijk details</button></section>`;
+    return `<section class="hero-card">
+      <div><p class="hero-eyebrow">Geld dat je laat liggen</p>
+      <p class="hero-amount">${eur(m.total)}<span> per jaar</span></p>
+      <p>Je hebt waarschijnlijk recht op ${m.open.map(r => r.label.toLowerCase()).join(' en ')}. Dat is ongeveer ${eur(m.total / 12)} per maand.</p></div>
+      <button class="btn light" data-act="go-check">Zo haal je het op →</button>
+    </section>`;
+  }
+
+  function renderMoneyCheck() {
+    const bank = R.detectFromBank(txs);
+    const a = state.answers;
+    if (!a || state.editing) {
+      const v = a || { partner: false, income: bank.grossYearlyGuess, renting: bank.rent > 0, rent: bank.rent || '', householdSize: 1, kids: [], wealth: 'low' };
+      return `<section class="check-intro">
+        <p class="eyebrow">Geld dat je laat liggen · ${R.YEAR}</p>
+        <h1>Check in een minuut of je geld laat liggen</h1>
+        <p class="muted">We hebben al ingevuld wat we uit je bankdata halen. Klopt iets niet? Pas het aan. Je antwoorden blijven op je apparaat.</p>
+      </section>
+      <form class="card check-form" id="checkform">
+        <fieldset><legend>Heb je een toeslagpartner?</legend>
+          <p class="hint">Meestal je partner met wie je samenwoont of getrouwd bent.</p>
+          <div class="seg"><label><input type="radio" name="partner" value="0" ${!v.partner ? 'checked' : ''}><span>Nee</span></label><label><input type="radio" name="partner" value="1" ${v.partner ? 'checked' : ''}><span>Ja</span></label></div>
+        </fieldset>
+        <label class="field">Bruto jaarinkomen ${R.YEAR}${v.partner ? ' (samen)' : ''}
+          <span class="euro-input">€<input name="income" type="number" min="0" step="500" inputmode="numeric" required value="${esc(v.income)}"></span>
+          ${bank.netMonthly ? `<span class="hint">We schatten dit op basis van je netto inkomen van ${eur(bank.netMonthly)} per maand. Het precieze bedrag staat op je jaaropgave of loonstrook.</span>` : ''}
+        </label>
+        <fieldset><legend>Huur je je woning?</legend>
+          <div class="seg"><label><input type="radio" name="renting" value="1" ${v.renting ? 'checked' : ''}><span>Ja, ik huur</span></label><label><input type="radio" name="renting" value="0" ${!v.renting ? 'checked' : ''}><span>Nee, koop</span></label></div>
+        </fieldset>
+        <label class="field">Kale huur per maand
+          <span class="euro-input">€<input name="rent" type="number" min="0" step="1" inputmode="numeric" value="${esc(v.rent)}"></span>
+          <span class="hint">Zonder servicekosten.${bank.rent ? ` In je bankdata zien we ${eur(bank.rent)} huur, maar daar kunnen servicekosten in zitten.` : ''}</span>
+        </label>
+        <div class="field-row">
+          <label class="field">Personen in je huishouden
+            <input class="plain-input" name="householdSize" type="number" min="1" max="12" value="${esc(v.householdSize)}">
+          </label>
+          <label class="field">Leeftijden kinderen onder 18
+            <input class="plain-input" name="kids" type="text" inputmode="numeric" placeholder="bijv. 4, 9" value="${esc((v.kids || []).join(', '))}">
+          </label>
+        </div>
+        <fieldset><legend>Spaargeld en beleggingen op 1 januari${v.partner ? ' (samen)' : ''}</legend>
+          <div class="seg col">
+            <label><input type="radio" name="wealth" value="low" ${v.wealth === 'low' ? 'checked' : ''}><span>Minder dan € 38.000</span></label>
+            <label><input type="radio" name="wealth" value="mid" ${v.wealth === 'mid' ? 'checked' : ''}><span>Tussen € 38.000 en € 146.000</span></label>
+            <label><input type="radio" name="wealth" value="high" ${v.wealth === 'high' ? 'checked' : ''}><span>Meer dan € 146.000</span></label>
+          </div>
+          <p class="hint">Met een toeslagpartner liggen de grenzen hoger, dus dit is een eerste inschatting.</p>
+        </fieldset>
+        <button class="btn big-btn" type="submit">Bereken wat ik laat liggen</button>
+      </form>`;
+    }
+
+    const m = moneyResults();
+    let freeShown = 0;
+    return `<section class="hero-card ${m.open.length ? '' : 'calm'}">
+        <div><p class="hero-eyebrow">Geld dat je laat liggen · schatting ${R.YEAR}</p>
+        ${m.open.length ? `<p class="hero-amount">${eur(m.total)}<span> per jaar</span></p><p>Ongeveer ${eur(m.total / 12)} per maand dat je nu niet ontvangt.</p>`
+          : `<h2>Je laat niets liggen 👏</h2><p>Op basis van je antwoorden heb je geen recht op extra toeslag, of je ontvangt het al.</p>`}</div>
+        <button class="btn light" data-act="edit-check">Antwoorden aanpassen</button>
+      </section>
+      <ul class="regelingen">
+        ${m.results.map(r => {
+          const asked = !!state.done['regeling:' + r.id];
+          if (r.already) return `<li class="card reg done"><div class="reg-head"><h2>${r.label}</h2><span class="status good"><i>✓</i>Ontvang je al</span></div><p class="muted">${r.what}</p></li>`;
+          if (!r.ok) return `<li class="card reg no"><div class="reg-head"><h2>${r.label}</h2><span class="muted small">Waarschijnlijk geen recht</span></div><p class="muted small">${esc(r.reason)}</p></li>`;
+          const locked = !state.premium && freeShown++ >= 1;
+          return `<li class="card reg yes ${asked ? 'asked' : ''}">
+            <div class="reg-head"><h2>${r.label}</h2><div class="reg-amount ${locked ? 'blur' : ''}">${locked ? '€ ••••' : eur(r.yearly)}<span>per jaar</span></div></div>
+            <p>${r.what}</p>
+            ${locked ? `<p class="muted small">🔒 Bedrag en aanvraagstappen zitten in Potje Plus.</p>` : `
+            <p class="how"><strong>Zo vraag je het aan:</strong> ${r.how}</p>
+            ${r.rough ? '<p class="hint">Dit is een grove schatting. Bij huurtoeslag hangt veel af van je precieze huur en situatie.</p>' : ''}
+            <div class="rec-actions">
+              <a class="chip" href="${r.source}" target="_blank" rel="noopener">Proefberekening Belastingdienst ↗</a>
+              <button class="chip ${asked ? 'on' : ''}" aria-pressed="${asked}" data-act="asked" data-id="${r.id}" data-label="${r.label} aangevraagd" data-yearly="${Math.round(r.yearly)}">${asked ? '✓ Aangevraagd' : 'Ik heb het aangevraagd'}</button>
+            </div>`}
+          </li>`;
+        }).join('')}
+      </ul>
+      ${!state.premium && m.open.length > 1 ? renderPaywall(m.open.length - 1, m.open.slice(1).reduce((s, r) => s + r.yearly, 0), 'regelingen') : ''}
+      <p class="disclaimer">Potje geeft een schatting op basis van de regels van ${R.YEAR} en jouw antwoorden. Dit is geen officiële berekening en geen advies. Doe altijd de proefberekening bij de Belastingdienst voordat je aanvraagt. Vraag je te veel aan, dan moet je het later terugbetalen.</p>`;
   }
 
   function renderMonthChart() {
@@ -386,20 +511,17 @@
     ${!state.premium && tips.length > firstFree ? renderPaywall(tips.length - firstFree, tips.slice(firstFree).reduce((s, t) => s + t.yearly, 0)) : ''}`;
   }
 
-  function renderPaywall(n, amount) {
+  function renderPaywall(n, amount, what = 'tips') {
     return `<section class="card paywall">
-      <p class="eyebrow">Potje Premium</p>
-      <h2>Ontgrendel ${n} ${n === 1 ? 'tip' : 'tips'} ter waarde van ${eur(amount)} per jaar</h2>
+      <p class="eyebrow">Potje Plus</p>
+      <h2>Ontgrendel ${n} ${what === 'tips' ? (n === 1 ? 'tip' : 'tips') : (n === 1 ? 'regeling' : 'regelingen')} ter waarde van ${eur(amount)} per jaar</h2>
       <ul class="checks">
-        <li>Alle bespaartips met eurobedrag, na elke import opnieuw</li>
-        <li>Melding zodra een abonnement duurder wordt</li>
-        <li>Afvinken en zien hoeveel je al bespaard hebt</li>
+        <li>Alle regelingen met bedrag en stap-voor-stap aanvragen</li>
+        <li>Alle bespaartips, ook bij prijsstijgingen van abonnementen</li>
+        <li>Een jaar lang toegang, ook na nieuwe imports</li>
       </ul>
-      <div class="plans">
-        <button class="plan" data-act="buy" data-plan="yearly"><span class="badge">Voordeligst</span><strong>${CONFIG.priceYearly}</strong><span>per jaar</span></button>
-        <button class="plan" data-act="buy" data-plan="monthly"><strong>${CONFIG.priceMonthly}</strong><span>per maand</span></button>
-      </div>
-      <p class="muted small">Je verdient het abonnement meestal met de eerste tip al terug. Je kunt elke maand opzeggen.</p>
+      <button class="btn big-btn" data-act="buy">Ontgrendel voor ${CONFIG.price}, eenmalig</button>
+      <p class="muted small">Geen abonnement. Eén keer betalen, een jaar alles open.</p>
     </section>`;
   }
 
@@ -423,7 +545,7 @@
           const head = t.date !== lastDate ? `<li class="txdate">${new Date(t.date + 'T12:00').toLocaleDateString('nl-NL', { weekday: 'long', day: 'numeric', month: 'long' })}</li>` : '';
           lastDate = t.date;
           return head + `<li class="tx">
-            <div class="tx-main"><strong>${esc(t.name)}</strong><small>${esc(t.desc)}</small></div>
+            ${avatar(t.name)}<div class="tx-main"><strong>${esc(t.name)}</strong><small>${esc(t.desc)}</small></div>
             <select data-act="setcat" data-id="${t.id}" aria-label="Categorie voor ${esc(t.name)}">${opts(t.category)}</select>
             <span class="tx-amt ${t.amount > 0 ? 'pos' : ''}">${t.amount > 0 ? '+' : '−'}${eur2(Math.abs(t.amount))}</span>
           </li>`;
@@ -462,7 +584,7 @@
     hideTip();
     const app = $('#app');
     if (!txs.length) { app.innerHTML = renderWelcome(); return; }
-    const views = { overzicht: renderOverview, tips: renderTips, transacties: renderTransactions, budgetten: renderBudgetsView };
+    const views = { overzicht: renderOverview, geld: renderMoneyCheck, tips: renderTips, transacties: renderTransactions, budgetten: renderBudgetsView };
     app.innerHTML = renderShell(views[state.view]());
   }
 
@@ -484,18 +606,38 @@
       case 'sample': return loadSample();
       case 'reset':
         if (confirm('Weet je zeker dat je alle transacties, budgetten en instellingen in deze browser wilt wissen?')) {
-          store.clear(); Object.assign(state, { raw: [], rules: {}, budgets: {}, done: {}, premium: false, isSample: false, view: 'overzicht' }); recompute(); render();
+          store.clear(); Object.assign(state, { raw: [], rules: {}, budgets: {}, done: {}, answers: null, premium: false, isSample: false, view: 'overzicht' }); recompute(); render();
         }
         return;
       case 'done': return toggleDone('tip:' + el.dataset.id, el.dataset.label, +el.dataset.yearly);
+      case 'asked': return toggleDone('regeling:' + el.dataset.id, el.dataset.label, +el.dataset.yearly);
       case 'cancel': return toggleDone('cancel:' + el.dataset.key, el.dataset.name + ' opgezegd', +el.dataset.yearly);
-      case 'buy': {
-        const link = el.dataset.plan === 'yearly' ? CONFIG.paymentLinkYearly : CONFIG.paymentLinkMonthly;
-        if (link) location.href = link;
-        else toast('Betalen is nog niet gekoppeld. Vul je Stripe Payment Links in bij CONFIG in js/app.js.', true);
+      case 'buy':
+        if (CONFIG.paymentLink) location.href = CONFIG.paymentLink;
+        else toast('Betalen is nog niet gekoppeld. Vul je Stripe Payment Link in bij CONFIG in js/app.js.', true);
         return;
-      }
+      case 'edit-check': state.editing = true; return render();
+      case 'go-check': return setView('geld');
     }
+  });
+
+  document.addEventListener('submit', e => {
+    if (e.target.id !== 'checkform') return;
+    e.preventDefault();
+    const f = new FormData(e.target);
+    const wealth = f.get('wealth') || 'low';
+    state.answers = {
+      partner: f.get('partner') === '1',
+      income: Math.max(0, +f.get('income') || 0),
+      renting: f.get('renting') === '1',
+      rent: Math.max(0, +f.get('rent') || 0),
+      householdSize: Math.max(1, +f.get('householdSize') || 1),
+      kids: String(f.get('kids') || '').split(/[^0-9]+/).filter(Boolean).map(Number).filter(n => n < 18),
+      wealth, wealthOk: wealth !== 'high', wealthHuurOk: wealth === 'low', age18: true,
+    };
+    store.set('answers', state.answers);
+    state.editing = false;
+    render(); window.scrollTo(0, 0);
   });
 
   document.addEventListener('keydown', e => {
