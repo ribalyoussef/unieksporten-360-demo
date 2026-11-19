@@ -236,3 +236,46 @@ body.dragging::after { content: "Laat los om te importeren"; position: fixed; in
   .hbar-label { white-space: normal; line-height: 1.2; }
   .topbar > .wrap { gap: 8px; }
 }
+
+/* nu: vrij te besteden + bespaarteller */
+.now-row { display: grid; grid-template-columns: 1.6fr 1fr; gap: 16px; }
+@media (max-width: 820px) { .now-row { grid-template-columns: 1fr; } }
+.big { font-size: clamp(2rem, 7vw, 2.6rem); font-weight: 800; letter-spacing: -0.04em; line-height: 1.1; margin: 0 0 .3rem; font-variant-numeric: tabular-nums; }
+.big span { font-size: 1rem; font-weight: 600; color: var(--text-2); letter-spacing: 0; }
+.big.neg { color: var(--critical-text); }
+.big.zero { color: var(--text-3); }
+.forecast { border-top: 4px solid var(--brand); }
+.forecast.short { border-top-color: var(--critical); }
+.forecast p { color: var(--text-2); }
+.forecast p strong { color: var(--text); }
+.counter .big { color: var(--brand); }
+.good-text { color: var(--good-text); font-weight: 600; }
+.calc { margin-top: 6px; font-size: .85rem; }
+.calc summary { cursor: pointer; color: var(--brand); font-weight: 600; }
+.calc dl { display: grid; grid-template-columns: 1fr auto; gap: 4px 16px; margin: 10px 0 0; }
+.calc dt { color: var(--text-2); }
+.calc dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+.calc .total { font-weight: 700; color: var(--text); border-top: 1px solid var(--border); padding-top: 4px; }
+.asof { font-size: .78rem; color: var(--text-3) !important; margin: 8px 0 0; }
+.asof.stale { color: var(--warning-text) !important; }
+.section-title { font-size: 1.05rem; margin: 6px 0 -6px; text-transform: capitalize; }
+
+/* chips & acties */
+.chip { display: inline-flex; align-items: center; gap: 4px; background: var(--surface); border: 1.5px solid var(--border); color: var(--text); border-radius: 999px; padding: .3rem .8rem; font-size: .82rem; font-weight: 600; text-decoration: none; cursor: pointer; }
+.chip:hover { border-color: var(--brand); color: var(--brand); }
+.chip.on { background: var(--brand); border-color: var(--brand); color: var(--brand-ink); }
+.tip-hero .chip, .tip .chip { margin-top: 10px; }
+.tip.is-done { opacity: .75; }
+.tip .status { margin: 0 0 6px; }
+.recurring li { flex-direction: column; align-items: stretch; gap: 6px; }
+.rec-top { display: flex; justify-content: space-between; gap: 10px; }
+.rec-actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.recurring li.cancelled .rec-top { color: var(--text-3); text-decoration: line-through; }
+.link.small { font-size: .78rem; }
+.forecast p.big { color: var(--text); }
+.forecast p.big.neg { color: var(--critical-text); }
+@media (max-width: 600px) {
+  .logo { font-size: 1.05rem; }
+  .month-select select { max-width: 40vw; font-size: .85rem; padding: .35rem .6rem; }
+  [data-act="upload"].btn.small { padding: .4rem .7rem; font-size: .82rem; }
+}

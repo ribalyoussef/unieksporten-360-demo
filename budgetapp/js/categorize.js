@@ -95,16 +95,25 @@
       const amts = list.map(t => -t.amount);
       const min = Math.min(...amts), max = Math.max(...amts);
       if (max / min > 1.15) continue;
-      const last = list.reduce((a, b) => (a.date > b.date ? a : b));
-      result.push({ name: last.name, category: last.category, monthly: -last.amount, months: ms.size, totalMonths: months.size });
+      const sorted = list.slice().sort((a, b) => a.date.localeCompare(b.date));
+      const last = sorted[sorted.length - 1];
+      // Laatste betaling met een ander bedrag: was dat goedkoper, dan is de prijs gestegen.
+      const prev = [...sorted].reverse().find(t => Math.abs(t.amount - last.amount) > 0.005) || sorted[sorted.length - 2];
+      const increase = -last.amount > -prev.amount * 1.02 ? -last.amount + prev.amount : 0;
+      result.push({
+        key: normalizeName(last.name), name: last.name, category: last.category, monthly: -last.amount,
+        day: +last.date.slice(8, 10), lastDate: last.date, increase, previous: -prev.amount,
+        months: ms.size, totalMonths: months.size,
+      });
     }
     return result.sort((a, b) => b.monthly - a.monthly);
   }
 
+  const eur2 = n => new Intl.NumberFormat('nl-NL', { style: 'currency', currency: 'EUR' }).format(n);
   const eur = n => new Intl.NumberFormat('nl-NL', { style: 'currency', currency: 'EUR', maximumFractionDigits: n >= 100 ? 0 : 2 }).format(n);
 
   // Bespaartips, gesorteerd op wat ze per jaar kunnen opleveren.
-  function buildTips(allTxs, month) {
+  function buildTips(allTxs, month, cancelled = new Set()) {
     const tips = [];
     const mName = new Date(month + '-01T12:00').toLocaleString('nl-NL', { month: 'long' });
     const inMonth = allTxs.filter(t => monthKey(t.date) === month);
@@ -112,7 +121,25 @@
     const prevMonths = [...new Set(allTxs.map(t => monthKey(t.date)))].filter(m => m < month).sort().slice(-3);
     const prev = prevMonths.map(m => summarize(allTxs.filter(t => monthKey(t.date) === m)));
 
-    const subs = findRecurring(allTxs).filter(r => ['abonnementen', 'vrijetijd'].includes(r.category));
+    const recurring = findRecurring(allTxs).filter(r => !cancelled.has(r.key));
+    const subs = recurring.filter(r => ['abonnementen', 'vrijetijd'].includes(r.category));
+
+    // Prijsstijging: het bedrag in deze maand ligt hoger dan de vorige keer.
+    for (const r of recurring) {
+      const list = allTxs.filter(t => t.amount < 0 && normalizeName(t.name) === r.key).sort((a, b) => a.date.localeCompare(b.date));
+      const idx = list.findIndex(t => monthKey(t.date) === month);
+      if (idx < 1) continue;
+      const now = -list[idx].amount, before = -list[idx - 1].amount;
+      if (now > before * 1.02) {
+        tips.push({
+          id: 'prijs-' + r.key,
+          title: `${r.name} werd ${eur(now - before)} per maand duurder`,
+          body: `Je betaalde ${eur2(before)}, nu ${eur2(now)}. Dat is ${eur((now - before) * 12)} extra per jaar. Kijk of er een goedkopere variant is, of zeg op als je het weinig gebruikt.`,
+          yearly: (now - before) * 12, alert: true,
+          action: 'Check je abonnement bij ' + r.name,
+        });
+      }
+    }
     if (subs.length >= 2) {
       const total = subs.reduce((s, r) => s + r.monthly, 0);
       const cheapest = subs[subs.length - 1];
@@ -197,5 +224,48 @@
     return tips.sort((a, b) => (b.urgent ? 1 : 0) - (a.urgent ? 1 : 0) || b.yearly - a.yearly);
   }
 
-  global.PotjeCore = { CATEGORIES, CAT, categorize, guessCategory, normalizeName, summarize, findRecurring, buildTips, monthKey, eur };
+  // Terugkerend inkomen (salaris, uitkering): dezelfde afzender in meerdere maanden.
+  function findPayday(allTxs) {
+    const groups = {};
+    for (const t of allTxs) if (t.amount > 0 && t.category === 'inkomen') (groups[normalizeName(t.name)] = groups[normalizeName(t.name)] || []).push(t);
+    let best = null;
+    for (const list of Object.values(groups)) {
+      const ms = new Set(list.map(t => monthKey(t.date)));
+      if (ms.size < 2) continue;
+      const amts = list.map(t => t.amount), avg = amts.reduce((a, b) => a + b, 0) / amts.length;
+      if (Math.max(...amts) / Math.min(...amts) > 1.3) continue;
+      if (!best || avg > best.amount) {
+        const days = list.map(t => +t.date.slice(8, 10)).sort((a, b) => a - b);
+        best = { name: list[0].name, amount: avg, day: days[Math.floor(days.length / 2)] };
+      }
+    }
+    return best;
+  }
+
+  const iso = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const dateAt = (y, m, day) => new Date(y, m, Math.min(day, new Date(y, m + 1, 0).getDate()));
+
+  // Hoeveel is er nog vrij te besteden tot het volgende salaris?
+  function forecast(allTxs, cancelled = new Set()) {
+    const pay = findPayday(allTxs);
+    if (!pay || !allTxs.length) return null;
+    const asOf = allTxs.reduce((a, t) => (t.date > a ? t.date : a), '');
+    const today = new Date(asOf + 'T12:00');
+    let lastPay = dateAt(today.getFullYear(), today.getMonth(), pay.day);
+    if (iso(lastPay) > asOf) lastPay = dateAt(today.getFullYear(), today.getMonth() - 1, pay.day);
+    const nextPay = dateAt(lastPay.getFullYear(), lastPay.getMonth() + 1, pay.day);
+    // Het salaris kan een paar dagen eerder of later binnenkomen: begin de periode 3 dagen ervoor.
+    const from = iso(new Date(lastPay.getTime() - 3 * 864e5));
+    const inCycle = allTxs.filter(t => t.date >= from && t.date <= asOf);
+    const s = summarize(inCycle);
+    const recurring = findRecurring(allTxs).filter(r => !cancelled.has(r.key));
+    const seen = new Set(inCycle.map(t => normalizeName(t.name)));
+    const upcoming = recurring.filter(r => !seen.has(r.key));
+    const upcomingTotal = upcoming.reduce((a, r) => a + r.monthly, 0);
+    const remaining = s.income - s.spend - Math.max(0, s.saved) - upcomingTotal;
+    const daysLeft = Math.max(1, Math.round((nextPay - today) / 864e5));
+    return { asOf, payName: pay.name, nextPay: iso(nextPay), daysLeft, income: s.income, spent: s.spend, saved: Math.max(0, s.saved), upcoming, upcomingTotal, remaining, perDay: remaining / daysLeft };
+  }
+
+  global.PotjeCore = { CATEGORIES, CAT, categorize, guessCategory, normalizeName, summarize, findRecurring, findPayday, forecast, buildTips, monthKey, eur };
 })(typeof window !== 'undefined' ? window : globalThis);

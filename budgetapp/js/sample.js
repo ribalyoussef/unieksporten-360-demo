@@ -26,12 +26,12 @@
       add(y, m, 3, -24.0, 'Odido', 'Mobiel abonnement');
       add(y, m, 1, -152.35, 'Zilveren Kruis', 'Zorgverzekering premie');
       add(y, m, 5, -13.99, 'Netflix International B.V.', 'Netflix maandabonnement');
-      add(y, m, 7, -11.99, 'Spotify AB', 'Spotify Premium');
+      add(y, m, 7, back <= 1 ? -12.99 : -11.99, 'Spotify AB', 'Spotify Premium'); // prijsverhoging
       add(y, m, 12, -10.99, 'Disney Plus', 'Disney+ abonnement');
       add(y, m, 14, -9.99, 'Videoland', 'Videoland Basis');
       add(y, m, 18, -29.99, 'Basic-Fit Nederland', 'Lidmaatschap');
       add(y, m, 20, -2.99, 'Apple.com/bill', 'iCloud+ 200 GB');
-      add(y, m, 25, 2940.0, 'Werkgever BV', 'Salaris ' + ref.toLocaleString('nl-NL', { month: 'long' }));
+      add(y, m, 25, 3260.0, 'Werkgever BV', 'Salaris ' + ref.toLocaleString('nl-NL', { month: 'long' }));
       add(y, m, 26, -200.0, 'Oranje Spaarrekening', 'Naar eigen spaarrekening');
       add(y, m, 17, -38.4, 'Gemeente Amsterdam', 'Afvalstoffenheffing termijn');
 

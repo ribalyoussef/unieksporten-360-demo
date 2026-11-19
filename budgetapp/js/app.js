@@ -12,7 +12,15 @@
     priceYearly: '€29',
   };
 
-  const { CATEGORIES, CAT, categorize, normalizeName, summarize, findRecurring, buildTips, monthKey, eur } = window.PotjeCore;
+  const { CATEGORIES, CAT, categorize, normalizeName, summarize, findRecurring, forecast, buildTips, monthKey, eur } = window.PotjeCore;
+
+  // Directe opzeglinks waar we zeker van zijn; anders zoeken we de opzegpagina op.
+  const CANCEL_LINKS = [
+    [/netflix/, 'https://www.netflix.com/cancelplan'],
+    [/spotify/, 'https://www.spotify.com/nl/account/subscription/'],
+  ];
+  const cancelUrl = r => (CANCEL_LINKS.find(([re]) => re.test(r.key)) || [])[1] || 'https://www.google.com/search?q=' + encodeURIComponent(r.name.replace(/\b(b\.?v\.?|ab|se|international|nederland)\b/gi, '').trim() + ' abonnement opzeggen');
+  const CANCELLABLE = ['abonnementen', 'vrijetijd', 'shopping', 'overig', 'energie'];
   const $ = (sel, root = document) => root.querySelector(sel);
   const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const eur2 = n => new Intl.NumberFormat('nl-NL', { style: 'currency', currency: 'EUR' }).format(n);
@@ -30,6 +38,7 @@
     budgets: store.get('budgets', {}),
     premium: store.get('premium', false),
     isSample: store.get('sample', false),
+    done: store.get('done', {}), // { id: { label, yearly, at } } — uitgevoerde tips en opgezegde abonnementen
     view: 'overzicht',
     month: null,
     search: '',
@@ -41,6 +50,16 @@
     state.premium = true; store.set('premium', true);
     history.replaceState(null, '', location.pathname);
     setTimeout(() => toast('Welkom bij Potje Premium! Alle tips staan nu open.'), 300);
+  }
+
+  const cancelled = () => new Set(Object.keys(state.done).filter(k => k.startsWith('cancel:')).map(k => k.slice(7)));
+  const savedTotal = () => Object.values(state.done).reduce((a, d) => a + d.yearly, 0);
+  function toggleDone(id, label, yearly) {
+    if (state.done[id]) delete state.done[id];
+    else state.done[id] = { label, yearly: Math.round(yearly * 100) / 100, at: new Date().toISOString().slice(0, 10) };
+    store.set('done', state.done);
+    render();
+    if (state.done[id]) toast(`Top! ${eur(yearly)} per jaar erbij op je bespaarteller.`);
   }
 
   let txs = [];
@@ -197,16 +216,22 @@
     const partial = isPartial(state.month);
     const prev = partial ? [] : prevMonths.map(m => summarize(monthData(m)));
     const avg = key => (prev.length ? prev.reduce((s, p) => s + p[key], 0) / prev.length : 0);
-    const tips = buildTips(txs, state.month);
+    const tips = buildTips(txs, state.month, cancelled());
     const top = tips[0];
     const cats = Object.entries(cur.spendByCat).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]);
     const maxCat = cats.length ? cats[0][1] : 1;
+    const gone = cancelled();
     const recurring = findRecurring(txs);
-    const recurringTotal = recurring.reduce((s, r) => s + r.monthly, 0);
+    const recurringTotal = recurring.filter(r => !gone.has(r.key)).reduce((s, r) => s + r.monthly, 0);
     const budgeted = Object.entries(state.budgets).filter(([, v]) => v > 0);
 
     return `
     ${partial ? `<p class="partial-note">${monthLabel(state.month)} loopt nog: je ziet alles t/m ${new Date(lastDateIn(state.month) + 'T12:00').toLocaleDateString('nl-NL', { day: 'numeric', month: 'long' })}. Vergelijkingen en tips maken we op volledige maanden. <button class="link" data-month-go="${allMonths().slice(-2)[0]}">Bekijk vorige maand</button></p>` : ''}
+    <div class="now-row">
+      ${renderForecast()}
+      ${renderSavedCounter()}
+    </div>
+    <h2 class="section-title">${monthLabel(state.month)}</h2>
     <section class="stats">
       <div class="stat"><span class="stat-label">Binnengekomen</span><span class="stat-value">${eur(cur.income)}</span>${delta(cur.income, avg('income'), false)}</div>
       <div class="stat"><span class="stat-label">Uitgegeven</span><span class="stat-value">${eur(cur.spend)}</span>${delta(cur.spend, avg('spend'), true)}</div>
@@ -221,6 +246,7 @@
         <h2>${esc(top.title)}</h2>
         <p>${esc(top.body)}</p>
         <p class="tip-action">→ ${esc(top.action)}</p>
+        ${doneButton(top)}
       </div>
       ${top.shortfall ? `<div class="tip-save"><strong class="neg">−${eur(top.shortfall)}</strong><span>tekort</span></div>` : `<div class="tip-save"><span>Tot</span><strong>${eur(top.yearly)}</strong><span>per jaar</span></div>`}
     </section>
@@ -249,9 +275,66 @@
 
     <section class="card">
       <header class="card-head"><h2>Vaste lasten en abonnementen</h2><span class="muted">${eur(recurringTotal)} per maand · ${eur(recurringTotal * 12)} per jaar</span></header>
-      ${recurring.length ? `<ul class="recurring">${recurring.map(r => `<li><span>${esc(r.name)}<small>${esc(CAT[r.category].label)}</small></span><span class="amt">${eur2(r.monthly)}<small>${eur(r.monthly * 12)}/jaar</small></span></li>`).join('')}</ul>`
+      ${recurring.length ? `<ul class="recurring">${recurring.map(r => renderRecurringItem(r, gone.has(r.key))).join('')}</ul>`
         : '<p class="muted">Importeer minstens twee maanden om terugkerende betalingen te vinden.</p>'}
     </section>`;
+  }
+
+  function renderForecast() {
+    const f = forecast(txs, cancelled());
+    if (!f) return `<section class="card forecast"><p class="eyebrow">Vrij te besteden</p><p class="muted">Importeer minstens twee maanden, dan rekenen we uit hoeveel je per dag kunt uitgeven tot je volgende salaris.</p></section>`;
+    const payDate = new Date(f.nextPay + 'T12:00').toLocaleDateString('nl-NL', { day: 'numeric', month: 'long' });
+    const asOf = new Date(f.asOf + 'T12:00');
+    const stale = (Date.now() - asOf) / 864e5 > 4;
+    const short = f.remaining < 0;
+    return `<section class="card forecast ${short ? 'short' : ''}">
+      <p class="eyebrow">Vrij te besteden tot je salaris</p>
+      ${short
+        ? `<p class="big neg">−${eur(-f.remaining)}</p><p>Je komt <strong>${eur(-f.remaining)} tekort</strong> tot ${payDate}. Stel grote aankopen uit en kijk bij je bespaartips waar je kunt schrappen.</p>`
+        : `<p class="big">${eur(f.perDay)} <span>per dag</span></p><p><strong>${eur(f.remaining)}</strong> voor de komende ${f.daysLeft} ${f.daysLeft === 1 ? 'dag' : 'dagen'}, tot je salaris op ${payDate}.</p>`}
+      <details class="calc"><summary>Hoe rekenen we dit?</summary>
+        <dl>
+          <dt>Binnengekomen sinds je vorige salaris</dt><dd>${eur2(f.income)}</dd>
+          <dt>Uitgegeven</dt><dd>−${eur2(f.spent)}</dd>
+          ${f.saved ? `<dt>Naar sparen</dt><dd>−${eur2(f.saved)}</dd>` : ''}
+          <dt>Nog af te schrijven${f.upcoming.length ? ': ' + f.upcoming.map(u => esc(u.name)).join(', ') : ''}</dt><dd>−${eur2(f.upcomingTotal)}</dd>
+          <dt class="total">Vrij te besteden</dt><dd class="total">${f.remaining < 0 ? '−' : ''}${eur2(Math.abs(f.remaining))}</dd>
+        </dl>
+      </details>
+      <p class="asof ${stale ? 'stale' : ''}">Op basis van je export t/m ${asOf.toLocaleDateString('nl-NL', { day: 'numeric', month: 'long' })}.${stale ? ' <button class="link" data-act="upload">Importeer een nieuwe export</button> voor een actueel bedrag.' : ''}</p>
+    </section>`;
+  }
+
+  function renderSavedCounter() {
+    const total = savedTotal(), items = Object.values(state.done);
+    return `<section class="card counter">
+      <p class="eyebrow">Bespaard dankzij Potje</p>
+      ${items.length
+        ? `<p class="big">${eur(total)} <span>per jaar</span></p>
+           <p class="muted small">${items.length} ${items.length === 1 ? 'actie' : 'acties'}: ${items.slice(-3).map(d => esc(d.label)).join(', ')}${items.length > 3 ? '…' : ''}</p>
+           ${!state.premium && total > 29 ? `<p class="small good-text">Dat is ${Math.floor(total / 29)}× wat Premium per jaar kost.</p>` : ''}`
+        : `<p class="big zero">€ 0</p><p class="muted small">Vink een bespaartip af of zeg een abonnement op. Wij tellen bij wat het je per jaar oplevert.</p>`}
+    </section>`;
+  }
+
+  function renderRecurringItem(r, isCancelled) {
+    const canCancel = CANCELLABLE.includes(r.category);
+    return `<li class="${isCancelled ? 'cancelled' : ''}">
+      <div class="rec-top">
+        <span>${esc(r.name)}<small>${esc(CAT[r.category].label)}</small></span>
+        <span class="amt">${eur2(r.monthly)}<small>${eur(r.monthly * 12)}/jaar</small></span>
+      </div>
+      ${r.increase && !isCancelled ? `<span class="status warning"><i aria-hidden="true">!</i>${eur2(r.increase)} per maand duurder (was ${eur2(r.previous)})</span>` : ''}
+      ${isCancelled
+        ? `<div class="rec-actions"><span class="status good"><i aria-hidden="true">✓</i>Opgezegd · ${eur(r.monthly * 12)}/jaar bespaard</span><button class="link small" data-act="cancel" data-key="${esc(r.key)}" data-name="${esc(r.name)}" data-yearly="${r.monthly * 12}">Ongedaan maken</button></div>`
+        : canCancel ? `<div class="rec-actions"><a class="chip" href="${cancelUrl(r)}" target="_blank" rel="noopener">Opzeggen ↗</a><button class="chip" data-act="cancel" data-key="${esc(r.key)}" data-name="${esc(r.name)}" data-yearly="${r.monthly * 12}">Opgezegd</button></div>` : ''}
+    </li>`;
+  }
+
+  function doneButton(t) {
+    if (t.shortfall) return '';
+    const on = !!state.done['tip:' + t.id];
+    return `<button class="chip ${on ? 'on' : ''}" aria-pressed="${on}" data-act="done" data-id="${esc(t.id)}" data-label="${esc(t.action)}" data-yearly="${t.yearly}">${on ? '✓ Gedaan, staat op je bespaarteller' : 'Gedaan'}</button>`;
   }
 
   function renderMonthChart() {
@@ -282,7 +365,7 @@
   }
 
   function renderTips() {
-    const tips = buildTips(txs, state.month);
+    const tips = buildTips(txs, state.month, cancelled());
     if (!tips.length) return `<section class="card"><h2>Geen tips deze maand</h2><p class="muted">Netjes! Importeer meer maanden voor betere vergelijkingen.</p></section>`;
     const total = tips.reduce((s, t) => s + t.yearly, 0);
     const firstFree = tips[0].shortfall ? 2 : 1; // de tekort-melding telt niet als tip
@@ -294,8 +377,8 @@
     <ol class="tips">
       ${tips.map((t, i) => {
         const locked = i >= firstFree && !state.premium;
-        return `<li class="card tip ${locked ? 'locked' : ''} ${t.urgent ? 'urgent' : ''}" ${locked ? 'aria-hidden="true"' : ''}>
-          <div><h2>${esc(t.title)}</h2><p>${esc(t.body)}</p><p class="tip-action">→ ${esc(t.action)}</p></div>
+        return `<li class="card tip ${locked ? 'locked' : ''} ${t.urgent ? 'urgent' : ''} ${state.done['tip:' + t.id] ? 'is-done' : ''}" ${locked ? 'aria-hidden="true"' : ''}>
+          <div>${t.alert ? '<span class="status warning"><i aria-hidden="true">!</i>Prijsstijging</span>' : ''}<h2>${esc(t.title)}</h2><p>${esc(t.body)}</p><p class="tip-action">→ ${esc(t.action)}</p>${locked ? '' : doneButton(t)}</div>
           ${t.shortfall ? `<div class="tip-save"><strong class="neg">−${eur(t.shortfall)}</strong><span>tekort</span></div>` : `<div class="tip-save"><strong>${eur(t.yearly)}</strong><span>per jaar</span></div>`}
         </li>`;
       }).join('')}
@@ -308,9 +391,9 @@
       <p class="eyebrow">Potje Premium</p>
       <h2>Ontgrendel ${n} ${n === 1 ? 'tip' : 'tips'} ter waarde van ${eur(amount)} per jaar</h2>
       <ul class="checks">
-        <li>Alle bespaartips, elke maand opnieuw</li>
-        <li>Waarschuwing als een abonnement duurder wordt</li>
-        <li>Onbeperkt maanden vergelijken en budgetten bijhouden</li>
+        <li>Alle bespaartips met eurobedrag, na elke import opnieuw</li>
+        <li>Melding zodra een abonnement duurder wordt</li>
+        <li>Afvinken en zien hoeveel je al bespaard hebt</li>
       </ul>
       <div class="plans">
         <button class="plan" data-act="buy" data-plan="yearly"><span class="badge">Voordeligst</span><strong>${CONFIG.priceYearly}</strong><span>per jaar</span></button>
@@ -401,9 +484,11 @@
       case 'sample': return loadSample();
       case 'reset':
         if (confirm('Weet je zeker dat je alle transacties, budgetten en instellingen in deze browser wilt wissen?')) {
-          store.clear(); Object.assign(state, { raw: [], rules: {}, budgets: {}, premium: false, isSample: false, view: 'overzicht' }); recompute(); render();
+          store.clear(); Object.assign(state, { raw: [], rules: {}, budgets: {}, done: {}, premium: false, isSample: false, view: 'overzicht' }); recompute(); render();
         }
         return;
+      case 'done': return toggleDone('tip:' + el.dataset.id, el.dataset.label, +el.dataset.yearly);
+      case 'cancel': return toggleDone('cancel:' + el.dataset.key, el.dataset.name + ' opgezegd', +el.dataset.yearly);
       case 'buy': {
         const link = el.dataset.plan === 'yearly' ? CONFIG.paymentLinkYearly : CONFIG.paymentLinkMonthly;
         if (link) location.href = link;

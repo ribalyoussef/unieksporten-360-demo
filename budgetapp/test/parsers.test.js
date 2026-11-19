@@ -34,7 +34,7 @@ const txs = globalThis.PotjeSample.makeSampleTransactions(new Date('2026-11-19')
 const overig = txs.filter(t => t.category === 'overig');
 assert.deepStrictEqual([...new Set(overig.map(t => t.name))], [], 'onbekende categorie: ' + overig.map(t => t.name));
 const s = summarize(txs.filter(t => t.date.startsWith('2026-10')));
-assert.strictEqual(s.income, 2940 + 18.5);
+assert.strictEqual(s.income, 3260 + 18.5);
 const rec = findRecurring(txs).map(x => x.name);
 ['Netflix International B.V.', 'Spotify AB', 'Basic-Fit Nederland', 'Woonstichting De Key'].forEach(n => assert(rec.includes(n), 'mist ' + n));
 assert(!rec.some(n => /Albert|Jumbo|NS Groep/.test(n)), 'boodschappen als vaste last: ' + rec);
